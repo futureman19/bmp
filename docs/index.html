@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bitcoin Machine Protocol — Bitcoin-verified commands for machines</title>
+<meta name="description" content="BMP is an open protocol for delivering Bitcoin-verified commands to machines over any bearer — visual codes, Bluetooth LE, or on-chain — with offline-verifiable proof of authority, payment, and ledger inclusion.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Crect width='8' height='8' fill='%230a0c0e'/%3E%3Crect x='1' y='1' width='2' height='2' fill='%2322d3ee'/%3E%3Crect x='5' y='1' width='2' height='2' fill='%2322d3ee'/%3E%3Crect x='3' y='3' width='2' height='2' fill='%23facc15'/%3E%3Crect x='1' y='5' width='2' height='2' fill='%2322d3ee'/%3E%3Crect x='5' y='5' width='2' height='2' fill='%2322d3ee'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0a0c0e; --surface:#10141a; --surface2:#151b22; --border:#212a34;
+    --text:#d8e0e8; --dim:#8494a3; --cyan:#22d3ee; --yellow:#facc15; --green:#34d399;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text); line-height:1.6}
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85em}
+  nav{border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(10,12,14,.92);backdrop-filter:blur(8px);z-index:10}
+  nav .inner{max-width:1060px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;justify-content:space-between}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:.08em;color:var(--text);font-size:14px}
+  .logo:hover{text-decoration:none}
+  .logo svg{width:20px;height:20px}
+  nav .links{display:flex;gap:22px;font-size:14px}
+  nav .links a{color:var(--dim)}
+  nav .links a:hover{color:var(--text);text-decoration:none}
+  .wrap{max-width:960px;margin:0 auto;padding:0 24px}
+  .hero{padding:88px 0 56px;border-bottom:1px solid var(--border)}
+  .kicker{color:var(--cyan);font-size:12px;letter-spacing:.24em;margin-bottom:20px}
+  .hero h1{font-size:clamp(30px,4.6vw,48px);line-height:1.14;margin-bottom:20px;max-width:22ch}
+  .hero h1 em{font-style:normal;color:var(--cyan)}
+  .hero p{color:var(--dim);max-width:62ch;font-size:17px}
+  .hero .cta{display:flex;gap:12px;margin-top:32px;flex-wrap:wrap}
+  .btn{padding:12px 22px;border-radius:6px;font-size:15px;border:1px solid var(--border);
+    background:var(--surface);color:var(--text)}
+  .btn:hover{border-color:var(--cyan);color:var(--cyan);text-decoration:none}
+  .btn.primary{background:var(--cyan);border-color:var(--cyan);color:#06272c;font-weight:600}
+  .btn.primary:hover{background:#4be0f5;color:#06272c}
+  section{padding:56px 0;border-bottom:1px solid var(--border)}
+  .sec-title{color:var(--cyan);font-size:12px;letter-spacing:.22em;margin-bottom:14px}
+  h2{font-size:clamp(22px,3vw,30px);margin-bottom:16px}
+  .layers{display:grid;gap:14px;margin-top:24px}
+  .layer{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px 24px;
+    display:grid;grid-template-columns:64px 1fr;gap:18px;align-items:start}
+  .layer .lv{font-size:22px;font-weight:700;color:var(--yellow)}
+  .layer h3{font-size:17px;margin-bottom:6px}
+  .layer p{color:var(--dim);font-size:14.5px}
+  .specs{display:grid;gap:14px;margin-top:24px}
+  .spec{display:flex;align-items:center;justify-content:space-between;gap:16px;
+    background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px 22px;color:var(--text)}
+  .spec:hover{border-color:var(--cyan);text-decoration:none}
+  .spec .num{font-weight:700;letter-spacing:.06em;white-space:nowrap}
+  .spec .what{color:var(--dim);font-size:14px;flex:1}
+  .badge{font-size:11px;font-weight:700;letter-spacing:.1em;color:var(--green);
+    border:1px solid rgba(52,211,153,.4);border-radius:4px;padding:3px 8px;white-space:nowrap}
+  .badge.comp{color:var(--cyan);border-color:rgba(34,211,238,.4)}
+  .code{background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+    padding:20px 22px;font-size:13.5px;overflow-x:auto;margin-top:20px}
+  .code .c{color:var(--dim)}
+  .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:24px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:22px 24px;color:var(--text)}
+  .card:hover{border-color:var(--cyan);text-decoration:none}
+  .card h3{font-size:16px;margin-bottom:8px}
+  .card p{color:var(--dim);font-size:14px}
+  .note{color:var(--dim);font-size:14px;margin-top:16px;max-width:70ch}
+  footer{padding:32px 24px;text-align:center;color:var(--dim);font-size:13px}
+</style>
+</head>
+<body>
+<nav><div class="inner">
+  <a class="logo" href="/">
+    <svg viewBox="0 0 8 8"><rect width="8" height="8" fill="#0a0c0e"/><rect x="1" y="1" width="2" height="2" fill="#22d3ee"/><rect x="5" y="1" width="2" height="2" fill="#22d3ee"/><rect x="3" y="3" width="2" height="2" fill="#facc15"/><rect x="1" y="5" width="2" height="2" fill="#22d3ee"/><rect x="5" y="5" width="2" height="2" fill="#22d3ee"/></svg>
+    BITCOIN MACHINE PROTOCOL
+  </a>
+  <div class="links">
+    <a href="#specs">Specs</a>
+    <a href="#implement">Implement</a>
+    <a href="https://github.com/futureman19/bmp">GitHub</a>
+  </div>
+</div></nav>
+
+<div class="wrap">
+  <section class="hero">
+    <div class="kicker">OPEN PROTOCOL · BSV MAINNET-PROVEN · ALL SPECS STABLE</div>
+    <h1>Commands machines can <em>cryptographically trust</em> — over any bearer, even no network at all.</h1>
+    <p>BMP defines a signed command envelope and three verification tiers. A robot, lock, drone, or
+       vending machine that receives a BMP message can prove locally <b>who sent it</b>, <b>that it
+       paid a real fee</b>, and <b>that the BSV ledger keeps it</b> — without trusting any server.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://svcode.org/verify/">See a live command verified ↗</a>
+      <a class="btn" href="https://github.com/futureman19/bmp">Read the specs on GitHub</a>
+    </div>
+  </section>
+
+  <section id="tiers">
+    <div class="sec-title">THE VERIFICATION STACK</div>
+    <h2>Three layers of proof, each independently checkable</h2>
+    <div class="layers">
+      <div class="layer">
+        <div class="lv">L1</div>
+        <div>
+          <h3>Authority — who sent it?</h3>
+          <p>Every command is an 85-byte envelope signed with secp256k1 by a registered authority key.
+             One ECDSA check, works on a microcontroller. Physical transports (a camera, a radio) supply
+             the presence proof; the signature supplies the identity.</p>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="lv">L2</div>
+        <div>
+          <h3>Payment — did it cost real money?</h3>
+          <p>The command is anchored in a fee-paying BSV transaction. From the transaction plus its
+             ancestor evidence, a device verifies the input signatures <em>offline</em> — proving the
+             command was paid for without asking any node. Freshness rules stop replay.</p>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="lv">L3</div>
+        <div>
+          <h3>Inclusion — does the ledger keep it?</h3>
+          <p>A standard BEEF package (BRC-62) with a BUMP merkle path (BRC-74) proves the anchored
+             command sits in a block whose proof-of-work the device checks against locally held
+             headers. Now the whole network arbitrates double-spends, not the device.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="specs">
+    <div class="sec-title">SPECIFICATIONS</div>
+    <h2>Four specs, all Stable, all mainnet-proven</h2>
+    <div class="specs">
+      <a class="spec" href="https://github.com/futureman19/bmp/blob/main/spec/BMP-0000-bitcoin-machine-protocol.md">
+        <span class="num">BMP-0000</span><span class="what">Umbrella — envelope schema, authority model, verification tiers, transport registry</span><span class="badge">STABLE</span>
+      </a>
+      <a class="spec" href="https://github.com/futureman19/bmp/blob/main/spec/BMP-0001-bmp-ble.md">
+        <span class="num">BMP-0001</span><span class="what">BMP-BLE — connectionless Bluetooth LE advertising transport (no pairing, self-healing)</span><span class="badge">STABLE</span>
+      </a>
+      <a class="spec" href="https://github.com/futureman19/bmp/blob/main/spec/BMP-0002-l2-on-chain-anchoring.md">
+        <span class="num">BMP-0002</span><span class="what">On-chain anchoring — envelopes in fee-paying transactions, offline payment evidence</span><span class="badge">STABLE</span>
+      </a>
+      <a class="spec" href="https://github.com/futureman19/bmp/blob/main/spec/BMP-0003-l3-spv-inclusion.md">
+        <span class="num">BMP-0003</span><span class="what">SPV inclusion — BEEF-packaged commands, BUMP merkle proofs vs PoW-verified headers</span><span class="badge">STABLE</span>
+      </a>
+      <a class="spec" href="https://github.com/futureman19/sv-codes/blob/main/spec/SV-0001-sv-code-visual-matrix.md">
+        <span class="num">SV-0001</span><span class="what">SV Code visual matrix transport — camera-readable animated binary grids (companion product)</span><span class="badge comp">STABLE · SV CODES</span>
+      </a>
+    </div>
+    <p class="note"><b>Stable</b> means two independent implementations (Python + browser JavaScript)
+       pass the published golden vectors with bit-identical results. Live mainnet proofs ship frozen
+       in the repo — every claim is replayable offline.</p>
+  </section>
+
+  <section id="implement">
+    <div class="sec-title">IMPLEMENT</div>
+    <h2>Reference code you can run today</h2>
+    <div class="code"><span class="c"># Python — 34 tests, zero-dependency core</span>
+git clone https://github.com/futureman19/bmp && cd bmp/poc
+pip install -r requirements.txt
+python -m pytest tests -q
+
+<span class="c"># JavaScript — byte-identical verifiers, browser + Node</span>
+node js_tests/svctest_l2l3.js   <span class="c"># 26 checks vs live mainnet vectors</span>
+node js_tests/svctest_ble.js    <span class="c"># 25 BLE parity checks</span></div>
+    <div class="cols">
+      <a class="card" href="https://svcode.org/verify/">
+        <h3>Live verifier ↗</h3>
+        <p>A real anchored command — "HELLO, CHAIN. This command paid its own way." — verified
+           layer-by-layer in your browser, frozen evidence or fresh from the chain.</p>
+      </a>
+      <a class="card" href="https://svcode.org/ble/">
+        <h3>BMP-BLE receiver ↗</h3>
+        <p>Web Bluetooth page that reassembles and verifies a fragmented command from raw
+           advertising packets — the radio last-mile, no pairing.</p>
+      </a>
+      <a class="card" href="https://github.com/futureman19/bmp/blob/main/spec/notes/brc-148-149-alignment.md">
+        <h3>bsv-multicast alignment ↗</h3>
+        <p>How BMP's L3 objects compose with the BEEF multicast plane (BRC-148/149): wide-area
+           distribution meets the physical last mile.</p>
+      </a>
+    </div>
+  </section>
+
+  <section style="border-bottom:none">
+    <div class="sec-title">ECOSYSTEM</div>
+    <h2>Built on BMP</h2>
+    <div class="cols">
+      <a class="card" href="https://svcode.org">
+        <h3>SV Codes ↗</h3>
+        <p>The flagship product: visual matrix codes that stream BMP payloads as light — browser
+           transmitter, camera scanner, and a live sticker campaign paying real sats.</p>
+      </a>
+      <a class="card" href="https://github.com/futureman19/bmp">
+        <h3>Your transport here</h3>
+        <p>The envelope and verification stack are bearer-agnostic. Reserved next: BMP-RFID,
+           BMP-LoRa. Spec process documented in BMP-0000.</p>
+      </a>
+    </div>
+  </section>
+</div>
+
+<footer>
+  Bitcoin Machine Protocol · <a href="https://github.com/futureman19/bmp">github.com/futureman19/bmp</a> ·
+  specs under Open BSV License terms, code under MIT
+</footer>
+</body>
+</html>

@@ -10,7 +10,7 @@ at all. A machine that receives a BMP message can prove, locally:
 3. **That the ledger keeps it** — SPV inclusion proof (BEEF + BUMP merkle path)
    against proof-of-work-verified block headers (L3)
 
-**Live demo:** [futureman19.github.io/sv-codes/verify/](https://futureman19.github.io/sv-codes/verify/)
+**Live demo:** [svcode.org/verify/](https://svcode.org/verify/)
 — a real anchored command (txid
 [`4a6f612b…b3d1`](https://whatsonchain.com/tx/4a6f612be1f8984ee13da679c1c5f7698f4d118304ca51ea98e895c4a977b3d1),
 buried in block 969,795) verified layer-by-layer in your browser, trusting no server.
