@@ -109,8 +109,10 @@ function ptMul(k, A){
 }
 function pubkeyFromPriv(priv){ return ptMul(mod(priv, Nn), G); }
 function liftX(x, odd){
+  if (x < 0n || x >= P) throw new Error("pubkey x out of range");
   const y2 = mod(x*x*x + 7n, P);
   let y = modPow(y2, (P+1n)/4n, P);
+  if (mod(y*y, P) !== y2) throw new Error("pubkey x is not on secp256k1");
   if ((y & 1n) !== (odd ? 1n : 0n)) y = P - y;
   return {x, y};
 }
@@ -125,7 +127,12 @@ function parsePubkey(hex){
     const x = bytesToBig(b.subarray(1));
     return liftX(x, b[0] === 3);
   }
-  if (b.length === 64) return {x: bytesToBig(b.subarray(0,32)), y: bytesToBig(b.subarray(32))};
+  if (b.length === 64){
+    const x = bytesToBig(b.subarray(0,32)), y = bytesToBig(b.subarray(32));
+    if (x >= P || y >= P) throw new Error("pubkey coordinate out of range");
+    if (mod(y*y, P) !== mod(x*x*x + 7n, P)) throw new Error("pubkey not on secp256k1");
+    return {x, y};
+  }
   throw new Error("bad pubkey");
 }
 function compressPubkey(Q){

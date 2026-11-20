@@ -80,5 +80,18 @@ const TIP = l3.tip_height_at_fetch;
   ok(rt.length === wire.length && rt.every((b, i) => b === wire[i]), 'R7 JS nonce-0 roundtrip');
 }
 
+/* ---------- R8: pubkey parsing must reject off-curve / out-of-range ---------- */
+{
+  const x5 = '02' + '00'.repeat(31) + '05';                 // compressed x=5 (off curve)
+  throws(() => SVC.parsePubkey(x5), 'not on secp256k1', 'R8 off-curve compressed x rejected');
+  const off64 = '00'.repeat(31) + '05' + '00'.repeat(32);   // raw x=5,y=0 (off curve)
+  throws(() => SVC.parsePubkey(off64), 'not on secp256k1', 'R8 off-curve 64-byte pubkey rejected');
+  const xP = '02' + 'fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f';
+  throws(() => SVC.parsePubkey(xP), 'out of range', 'R8 out-of-range x rejected');
+  const l2 = JSON.parse(fs.readFileSync('vectors/l2_live.json', 'utf8'));
+  const Q = SVC.parsePubkey(l2.authority_pubkey);
+  ok(typeof Q.x === 'bigint' && typeof Q.y === 'bigint', 'R8 real authority pubkey still parses');
+}
+
 console.log(`svctest_review: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

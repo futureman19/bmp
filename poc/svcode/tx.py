@@ -33,8 +33,12 @@ def pt_mul(k, p=G):
     return r
 
 def lift_x(x, odd):
+    if not (0 <= x < P):
+        raise ValueError("pubkey x out of range")
     y2 = (pow(x, 3, P) + 7) % P
     y = pow(y2, (P + 1) // 4, P)
+    if (y * y) % P != y2:
+        raise ValueError("pubkey x is not on secp256k1")
     if (y & 1) != (1 if odd else 0): y = P - y
     return (x, y)
 

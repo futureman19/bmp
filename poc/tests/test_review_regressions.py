@@ -106,3 +106,17 @@ def test_r7_parse_preserves_zero_nonce():
     assert parsed.nonce == 0
     assert parsed.verify(sk.verifying_key)
     assert parsed.serialize() == wire
+
+
+# ---------- R8: pubkey lifting must reject off-curve / out-of-range x ----------
+
+def test_r8_lift_x_rejects_off_curve_and_out_of_range():
+    from svcode import tx as txm
+    from svcode.crypto import generate_key, pubkey_hex
+    with pytest.raises(ValueError, match="not on secp256k1"):
+        txm.lift_x(5, False)                 # 5^3+7 is a quadratic non-residue mod P
+    with pytest.raises(ValueError, match="out of range"):
+        txm.lift_x(txm.P, False)
+    sk = generate_key()
+    x, y = txm.parse_pubkey(bytes.fromhex(pubkey_hex(sk)))
+    assert (y * y - x ** 3 - 7) % txm.P == 0   # real keys still lift onto the curve
