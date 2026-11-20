@@ -69,3 +69,20 @@ def test_r1_stripped_beef_zero_bumps_rejected():
 def test_r1_empty_header_store_rejected():
     with pytest.raises(ValueError, match="non-empty header store"):
         spv.verify_l3(BEEF, AUTH, [], seen={}, tip_height=TIP, min_depth=1)
+
+
+# ---------- R5: a tx must not spend the same outpoint twice ----------
+
+def test_r5_duplicate_outpoint_within_tx_rejected():
+    """Two inputs referencing one outpoint is consensus-invalid and would
+    double-count totalIn (forging fee payment). verify_l2 must reject it."""
+    from svcode import anchor
+    from svcode.envelope import Envelope
+    from svcode.crypto import generate_key, pubkey_hex
+    sk = generate_key()
+    env = Envelope(target_id=0x53564331, action=0x00FF, payload=b"DUP")
+    env.sign(sk)
+    u = {"txid": "ab" * 32, "vout": 0, "value": 10_000}
+    raw, _txid, prev = anchor.build_l2_tx(env.serialize(), [u, u], 2)
+    with pytest.raises(ValueError, match="duplicate outpoint"):
+        anchor.verify_l2(bytes.fromhex(raw), prev, pubkey_hex(sk), {})

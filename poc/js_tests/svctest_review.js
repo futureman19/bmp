@@ -52,5 +52,22 @@ const TIP = l3.tip_height_at_fetch;
          'non-empty header store', 'R1 empty header store rejected');
 }
 
+/* ---------- R5: a tx must not spend the same outpoint twice ---------- */
+{
+  const l2 = JSON.parse(fs.readFileSync('vectors/l2_live.json', 'utf8'));
+  const raw = unhex(l2.raw_tx_hex);
+  const parsed = SVANCHOR.parseTx(raw);
+  ok(parsed.inputs.length === 1, 'R5 fixture has one input');
+  const inp = parsed.inputs[0];
+  const input0 = new Uint8Array([...inp.outpoint, ...SVANCHOR.serVarint(inp.scriptSig.length),
+                                 ...inp.scriptSig, ...inp.sequence]);
+  const tail = raw.slice(5 + input0.length);   // 4-byte version + 1-byte varint(1)
+  const bad = Uint8Array.from(Buffer.concat([
+    Buffer.from(raw.slice(0, 4)), Buffer.from(SVANCHOR.serVarint(2)),
+    Buffer.from(input0), Buffer.from(input0), Buffer.from(tail)]));
+  throws(() => SVANCHOR.verifyL2(bad, l2.prevouts, l2.authority_pubkey, new Map()),
+         'duplicate outpoint', 'R5 duplicate outpoint within tx rejected');
+}
+
 console.log(`svctest_review: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -98,6 +98,14 @@ def verify_l2(raw: bytes, prevouts: list[dict], authority_vk_hex: str,
         raise ValueError("envelope signature invalid")
 
     evidence = {(p["txid"], p["vout"]): p for p in prevouts}
+    # A tx may not spend the same outpoint twice (consensus-invalid; would
+    # also double-count totalIn and forge fee payment). Structural pre-pass
+    # before per-input signature verification.
+    outpoints = [(inp["outpoint"][:32][::-1].hex(),
+                  int.from_bytes(inp["outpoint"][32:], "little"))
+                 for inp in parsed["inputs"]]
+    if len(set(outpoints)) != len(outpoints):
+        raise ValueError("duplicate outpoint within transaction")
     structured_inputs = []
     total_in = 0
     for i, inp in enumerate(parsed["inputs"]):                   # 4. payment evidence

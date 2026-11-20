@@ -147,6 +147,16 @@ function verifyL2(raw, prevouts, authorityPubHex, seen = null){
     throw new Error("envelope signature invalid");
 
   const evidence = new Map(prevouts.map(p => [p.txid + ":" + p.vout, p]));
+  // A tx may not spend the same outpoint twice (consensus-invalid; would
+  // also double-count totalIn and forge fee payment). Structural pre-pass
+  // before per-input signature verification.
+  const opKeys = parsed.inputs.map(inp => {
+    const txid = bytesToHex(inp.outpoint.slice(0, 32).slice().reverse());
+    const vout = inp.outpoint[32] | inp.outpoint[33]<<8 | inp.outpoint[34]<<16 | inp.outpoint[35]<<24;
+    return txid + ":" + vout;
+  });
+  if (new Set(opKeys).size !== opKeys.length)
+    throw new Error("duplicate outpoint within transaction");
   let totalIn = 0n;
   for (let i = 0; i < parsed.inputs.length; i++){                 // 4. payment evidence
     const inp = parsed.inputs[i];
