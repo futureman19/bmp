@@ -9,6 +9,7 @@
 | **Created** | 2026-11-20 |
 | **Requires** | BMP-0000, BMP-0003 |
 | **Refines** | BMP-0003 §3 step 4 ("Header trust") and §5 ("Header store is the trust root") |
+| **Revision** | 2026-11-20 round-1 review fixes: Core shift-order flag taxonomy (§3.1, §8.2), orphan-chain adoption semantics (§4.2, §4.4, §8.4), citation pins to Bitcoin Core v32.1 (§3, §13), chainwork sanity wording (§3.4, §9.1) |
 
 ## 1. Abstract and motivation
 
@@ -114,33 +115,43 @@ Bitcoin Core, which uses fixed-width unsigned integer arithmetic.
 
 ### 3.1 Compact target decoding (`nBits`)
 
-Port of `arith_uint256::SetCompact` (Bitcoin Core `src/arith_uint256.cpp`;
-identical in Bitcoin SV). Given the 32-bit little-endian `nBits` field at
+Port of `arith_uint256::SetCompact` (Bitcoin Core v32.1 `src/arith_uint256.cpp`;
+same rules in Bitcoin SV). Given the 32-bit little-endian `nBits` field at
 header bytes 72..76:
 
 ```
 size = nBits >> 24                  # exponent byte, 0..255
 word = nBits & 0x007FFFFF           # 23-bit mantissa
 
+if size <= 3:
+    word >>= 8 * (3 - size)         # Core shifts the word FIRST
+    target = word
+else:
+    target = word << (8 * (size - 3))
+
+# Flags are computed AFTER the shift, from the post-shift word (Core order).
 negative = (word != 0) and (nBits & 0x00800000 != 0)
 overflow = (word != 0) and (
       size > 34
    or (word > 0xFF   and size > 33)
    or (word > 0xFFFF and size > 32))
-
-if size <= 3:
-    target = word >> (8 * (3 - size))
-else:
-    target = word << (8 * (size - 3))
 ```
 
 Notes:
 
-- The sign bit (`0x00800000`) only makes a target *negative* when the mantissa
-  is non-zero; `nBits = 0x00800000` decodes to target 0 and is rejected as a
-  **zero target**, not a negative one. (The current code rejects any sign bit
-  as "negative target"; outcomes for all inputs are unchanged — both reject —
-  but the error taxonomy below follows Core exactly.)
+- The sign bit (`0x00800000`) only makes a target *negative* when the
+  **post-shift** mantissa is non-zero — Core computes both flags after the
+  size ≤ 3 right-shift. So `nBits = 0x00800000` (mantissa 0) and the size ≤ 2
+  sign-bit compacts whose mantissa shifts to zero (`0x00800001`, `0x0180ffff`,
+  `0x02800001`) decode to target 0 and are rejected as **zero target**, not
+  negative; sign-bit compacts whose post-shift mantissa stays non-zero
+  (`0x03800001`, `0x02800100`, `0x1d80ffff`) are **negative target**. (The
+  current code rejects any sign bit as "negative target"; accept/reject
+  outcomes for every input are unchanged — both reject — but the error
+  taxonomy below follows Core exactly, including this shift-order subtlety.)
+- Flag order does not affect `overflow`: every one of its size clauses
+  requires `size > 32`, where no shift happens, so pre-shift and post-shift
+  words are identical there. Only the `negative` taxonomy moves.
 - `overflow` is what the current implementations lack: e.g. `0xff00ffff`
   (size 255) or `0x21010000` (size 33, word `0x010000` > `0xFFFF`) decode to
   values ≥ 2^256 that no 256-bit digest can exceed. Core rejects them before
@@ -151,7 +162,9 @@ Notes:
 
 ### 3.2 Validity checks, in order
 
-Port of `CheckProofOfWork` (Bitcoin Core `src/consensus/pow.cpp`). A header
+Port of `CheckProofOfWork`/`CheckProofOfWorkImpl`/`DeriveTarget` (Bitcoin
+Core v32.1 `src/pow.cpp`; formerly `src/consensus/pow.cpp` — the order below
+matches `DeriveTarget`'s range check exactly). A header
 MUST be rejected on the first failing check, with the listed error substring
 (stable across both implementations — the parity harnesses match on them):
 
@@ -177,7 +190,8 @@ bytes)}`. Linkage, height, and work are the store's job (§4).
 
 ### 3.3 `powLimit` and chain parameters
 
-Mainnet `powLimit` (Bitcoin Core `src/chainparams.cpp`, `CMainParams`; BSV
+Mainnet `powLimit` (Bitcoin Core v32.1 `src/kernel/chainparams.cpp`,
+`CMainParams` — moved from `src/chainparams.cpp`, now a wrapper; BSV
 mainnet inherits it — the chains share the genesis block and the original
 consensus parameters):
 
@@ -205,7 +219,8 @@ MAINNET_POW_LIMIT = 0x00000000ffffffffffffffffffffffffffffffffffffffffffffffffff
 
 ### 3.4 Block work (integer-only)
 
-Port of `GetBlockProof` (Bitcoin Core `src/consensus/pow.cpp`):
+Port of `GetBitsProof` (Bitcoin Core v32.1 `src/chain.cpp`; formerly
+`GetBlockProof` in `src/consensus/pow.cpp`):
 
 ```
 work(target) = ((2^256 − 1 − target) // (target + 1)) + 1
@@ -217,10 +232,13 @@ This is identically Core's `(~target / (target + 1)) + 1` and
 diverges from Core whenever `target + 1` does not divide 2^256 — it MUST NOT
 be used (caught and corrected during spec drafting by a 2000-target
 equivalence check). Sanity: `work(0xffff << 208) = 4295032833 = 0x100010001
-= 2^32 + 2^16 + 1`, which is exactly mainnet block 1's published chainwork
-(the "difficulty 1 ≈ 2^32 work" figure is the nominal approximation using
-2^224, not the compact target). Cumulative chainwork is the sum of block
-works along a branch. Both implementations use unbounded integers (Python
+= 2^32 + 2^16 + 1`, which is the per-block work of any difficulty-1 block:
+it equals mainnet **genesis (block 0) cumulative chainwork** `0x100010001`,
+while block 1's cumulative chainwork is `0x200020002` (genesis + block 1,
+both difficulty 1; both values re-verified live via WhatsOnChain). (The
+"difficulty 1 ≈ 2^32 work" figure is the nominal approximation using 2^224,
+not the compact target.) Cumulative chainwork is the sum of block works
+along a branch. Both implementations use unbounded integers (Python
 `int`, JS `BigInt`); no wrapping. (Core's `uint256` chainwork could
 theoretically wrap after ~2^224 blocks; the divergence is immaterial and
 unbounded arithmetic is simpler to keep parity-exact.)
@@ -276,16 +294,29 @@ In order:
    (idempotent no-op). The live L3 vector lists the same header twice (subject
    and parent share block 969795); this MUST remain a no-op, not an error.
 3. **Parent lookup.** Resolve `prev_hash` (internal byte order) against
-   stored headers and anchors.
-   - **Found:** adopt. `height = parent.height + 1`;
+   **adopted** headers and anchors only. Orphan-pool entries do NOT qualify
+   as parents: they have no derived height/work yet, so `parent.height + 1`
+   would be undefined.
+   - **Found (adopted header or anchor):** adopt. `height = parent.height + 1`;
      `work = parent.work + work(target)` (§3.4). Insert. Proceed to step 4.
-   - **Not found:** park in the orphan pool (§4.4); return `None`/`null`.
+   - **Not found, or found only in the orphan pool:** park in the orphan
+     pool (§4.4); return `None`/`null`. A header whose parent is itself an
+     orphan therefore parks too — orphan chains park whole and resolve via
+     the drain (step 5), never against undefined height/work.
 4. **Fork choice.** Recompute the best chain (§4.3). If the tip changed,
    rebuild the best-chain root index (§4.5).
 5. **Orphan drain.** Repeatedly scan the orphan pool for headers whose
-   `prev_hash` now resolves; adopt them (steps 3–4 recurse) until no orphan
-   can be adopted. Cascade adoption MUST handle chains of orphans arriving
-   parent-last.
+   `prev_hash` now resolves to an adopted header/anchor; adopt them (steps
+   3–4 recurse) until no orphan can be adopted. Re-parenting is
+   **transitive**: adopting A makes A a valid parent, so an orphan B with
+   `prev_hash = A` adopts in the same drain at `height(A) + 1` /
+   `work(A) + work(B)`, and so on down arbitrarily long orphan chains that
+   arrived parent-last. A single `add` can therefore cascade-adopt a whole
+   chain, and best-chain selection (step 4) sees the fully drained chain
+   before `add` returns. Drain scans run in pool insertion order (FIFO):
+   adoption is monotone, so the final adopted set is order-independent, but
+   equal-work tie-break incumbents (§4.3) depend on adoption order, and
+   insertion-order scans keep them deterministic and parity-identical.
 6. Return the adopted info.
 
 Info shape (both languages, same field semantics):
@@ -318,8 +349,9 @@ assertions), reject with `duplicate header height conflict`.
 
 ### 4.4 Orphan pool
 
-- Headers with unknown parents are parked, keyed by hash, in insertion order
-  (FIFO).
+- Headers whose `prev_hash` does not resolve to an adopted header/anchor
+  are parked — including headers whose parent is itself an orphan (orphan
+  chains, §4.2 step 3) — keyed by hash, in insertion order (FIFO).
 - Capacity `max_orphans`. On overflow, evict the **oldest** entries first.
   Eviction is silent (the header may be re-added later); adopted headers are
   never evicted.
@@ -348,8 +380,8 @@ command.
 ### 4.6 Invariants (testable)
 
 1. Every stored header passes §3.2.
-2. Every non-anchor header's `prev_hash` resolves to a stored header/anchor
-   at `height − 1`.
+2. Every non-anchor header's `prev_hash` resolves to an adopted
+   header/anchor at `height − 1` (orphan-pool entries are not parents).
 3. `work` equals the sum of §3.4 block works along the branch from the root.
 4. Best tip = argmax cumulative work, ties to incumbent.
 5. `len` counts adopted only; orphan pool ≤ `max_orphans`.
@@ -383,10 +415,16 @@ Given an L3 message, authority keys, a store, and a freshness log:
 2. **Subject BUMP required** (R1, unchanged): subject `bump_index` null ⇒
    `L3 requires a BUMP for the subject transaction`.
 3. **Non-empty store** (R1, unchanged): `len(store) == 0` ⇒
-   `L3 requires a non-empty header store`.
-4. **BMP-0002 validation** of the subject with prevout evidence derived from
-   BEEF ancestors (unchanged, BMP-0003 §3.2), including staged freshness
-   (R2 invariant: commit only after all checks pass).
+   `L3 requires a non-empty header store`. Orphans do not count toward
+   `len` (§4.4), so an anchorless store holding only parked orphans still
+   fails here with the same R1 message. Conversely `len > 0` implies
+   `best_tip()` is non-null (every counted header is an anchor or descends
+   from one), so step 6 never dereferences a null tip.
+4. **BMP-0002 validation** of the subject per BMP-0002 §5 steps 1–6 —
+   including the authority-signature check (§5.3) — with prevout evidence
+   derived from BEEF ancestors (unchanged, BMP-0003 §3.2). Staged freshness
+   (§5 step 6) is preserved (R2 invariant: commit only after all checks
+   pass).
 5. **Merkle inclusion.** For every transaction carrying a BUMP: compute the
    BRC-74 root (unchanged walk, including the working-node-parity concat
    order); `store.get_by_root(root)` MUST return a header, else
@@ -508,9 +546,14 @@ valid and the failure is attributable to the target rule):
 
 | `nBits` | Expect | Why |
 |---|---|---|
-| `0x1d80ffff` | reject `negative target` | sign bit, mantissa ≠ 0 |
+| `0x1d80ffff` | reject `negative target` | sign bit, post-shift mantissa ≠ 0 |
+| `0x03800001` | reject `negative target` | size 3: shift 0, post-shift word 1 ≠ 0 ⇒ negative (shift-order boundary) |
+| `0x02800100` | reject `negative target` | size 2, sign bit: word `0x0100 >> 8 = 1` ≠ 0 ⇒ negative despite size ≤ 2 |
 | `0x1d000000` | reject `zero target` | mantissa 0 |
 | `0x00800000` | reject `zero target` | sign bit but mantissa 0 ⇒ Core: not negative, target 0 |
+| `0x00800001` | reject `zero target` | size 0, sign bit: word `1 >> 24 = 0` ⇒ post-shift word 0 ⇒ zero, not negative (Core shift order) |
+| `0x0180ffff` | reject `zero target` | size 1, sign bit: word `0xFFFF >> 16 = 0` ⇒ zero, not negative |
+| `0x02800001` | reject `zero target` | size 2, sign bit: word `1 >> 8 = 0` ⇒ zero, not negative |
 | `0x02000001` | reject `zero target` | size 2: `1 >> 8 = 0` |
 | `0xff123456` | reject `target overflow` | size 255 > 34 (the R3 repro) |
 | `0x23000001` | reject `target overflow` | size 35 > 34, any nonzero word |
@@ -526,6 +569,12 @@ valid and the failure is attributable to the target rule):
 ("accept (validity)" = passes §3.2 checks 1–5; check 6 then depends on the
 actual digest — with a real header's digest and an easy target, PoW fails,
 which is correct and separately asserted.)
+
+The three size ≤ 2 sign-bit zero rows and the two sign-bit negative contrast
+rows pin the Core shift-order taxonomy (§3.1): a pre-shift negative flag
+misclassifies the zero rows as `negative target`. Accept/reject is unchanged
+(both reject), but the parity harness matches on error substrings, so these
+rows are parity-load-bearing.
 
 ### 8.3 Fake-chain methodology (no mainnet grinding in tests)
 
@@ -551,6 +600,47 @@ test suite. The plan separates **math tests** from **logic tests**:
   inclusion fails. Proves linkage gates real headers too, not just synthetic
   ones.
 
+### 8.4 Synthetic store scenarios (orphan / fork logic fixtures)
+
+Deterministic scenarios shared by both harnesses, built per §8.3 (trivial
+powLimit, `nonce = 0, 1, 2, …`, arbitrary merkle roots, correct `prev_hash`
+linkage, synthetic anchor heights). The orphan family exercises the §4.2
+step 3/5 semantics normatively:
+
+- **S1 — orphan pair, parent-last.** Store anchored at height `h`. Add B
+  (`prev_hash = A`) first: A is unknown ⇒ B parks. Add A (`prev_hash =`
+  anchor): A adopts at `h+1`; the drain then adopts B at `h+2` with
+  `work(B) = work(anchor) + work(A) + work(B)`. Best tip is B;
+  `get_by_root` finds both; `len` = anchor + 2.
+- **S2 — orphan chain of three, fully parent-last.** Add C (`prev = B`),
+  B (`prev = A`), A (`prev =` anchor) in that order: C and B park (B's
+  parent A is unknown at that point; C's parent B is an orphan). A's
+  adoption cascade-adopts B then C in one drain: heights `h+1, h+2, h+3`,
+  cumulative work, best tip C.
+- **S3 — orphan-only anchorless store.** No anchors; add A then B
+  (`prev = A`): both park, `len == 0`, `best_tip() == None`, and L3 rejects
+  with the R1 `L3 requires a non-empty header store` message (§5.2 step 3).
+
+Fork/reorg, FIFO-eviction, and duplicate-add scenarios use the same
+construction rules with the expected outcomes already normatively fixed in
+§4.3 (tie-breaks, strict-greater reorg), §4.4 (eviction), §4.2 step 1
+(duplicate no-op); their case lists are in §9.1.
+
+### 8.5 Parity reference (`headers_ref.json`)
+
+Python-generated reference intermediates consumed byte-identically by the
+JS harness (§9.3), following the `l2l3_ref.json` pattern. It MUST cover:
+
+1. Every §8.2 row (19 vectors): decoded target, flags, accept/reject **and
+   error substring** — including the size ≤ 2 sign-bit rows, whose taxonomy
+   is shift-order-sensitive.
+2. The §8.1 fixture sample: per-header hash, target, work, height.
+3. Every §8.4 scenario: adoption order, heights, cumulative works, orphan
+   pool states, best-tip selections, `get_by_root` results.
+4. The §4.3 equal-work tie-break determinism case (both insertion orders).
+5. Work-formula spot values (§3.4), including the genesis/block-1 chainwork
+   cross-check.
+
 ## 9. Test plan (implementation card)
 
 Runner (provisioned): WSL Ubuntu-24.04, python3.12 + pytest 9.2.0 + ecdsa
@@ -569,15 +659,20 @@ Store (§4): anchor validation rejects bad anchor; same-height conflicting
 anchors rejected; duplicate anchor idempotent; height-0 non-genesis anchor
 rejected (mainnet params); linkage adoption heights/work correct over the
 300-header fixture (best tip = 969795, work = sum); duplicate add no-op;
-orphan parked then cascade-adopted parent-last (chain of 3); orphan FIFO
-eviction at `max_orphans=4`; rejected add leaves state unchanged; fork:
+orphan parked then cascade-adopted parent-last (chain of 3, §8.4 S2);
+orphan pair whose parent is itself an orphan (§8.4 S1): B parks while A
+is parked, both adopt transitively when A's parent arrives, heights and
+cumulative work correct, best tip sees them; orphan-only anchorless
+store (§8.4 S3): `len == 0`, `best_tip() is None`, L3 R1 message; orphan
+FIFO eviction at `max_orphans=4`; rejected add leaves state unchanged; fork:
 two children, higher work wins; equal work keeps incumbent; reorg flips tip;
 `get_by_root` hides losing-fork and orphan roots; root index deterministic
 (first-wins ascending height).
 
-Work math (§3.4): `work(0xffff << 208) == 4295032833 (0x100010001)` —
-cross-checked against mainnet block 1's published chainwork (re-verify via
-indexer at fixture-generation time); the off-by-one `ceil` variant is
+Work math (§3.4): `work(0xffff << 208) == 4295032833 (0x100010001)` =
+mainnet genesis cumulative chainwork; block 1 cumulative = `0x200020002`
+(2×, both blocks difficulty 1) — re-verify both via indexer at
+fixture-generation time; the off-by-one `ceil` variant is
 asserted **not** equal for a target where `target+1 ∤ 2^256`; equivalence
 with `floor(2^256/(target+1))` over the fixture's real targets.
 
@@ -598,12 +693,12 @@ from 41 to ~80; **zero regressions**.
 
 ### 9.3 JS parity — `poc/js_tests/svctest_headers.js` (new)
 
-Runs the same §8.2 table, the same fixture sample, and the same synthetic
-store scenarios against `js/spv.js`, comparing to
-`poc/js_tests/headers_ref.json` — Python-generated reference intermediates
-(targets, works, hashes, best-tip selections, accept/reject + error
-substrings), following the `l2l3_ref.json` pattern. Includes BigInt/no-float
-checks and the tie-break determinism case. `svctest_l2l3.js` (26) and
+Runs the same §8.2 table, the same fixture sample, and the same §8.4
+synthetic store scenarios against `js/spv.js`, comparing to
+`poc/js_tests/headers_ref.json` — the §8.5 Python-generated reference
+intermediates (targets, works, hashes, best-tip selections, accept/reject +
+error substrings), following the `l2l3_ref.json` pattern. Includes
+BigInt/no-float checks and the tie-break determinism case. `svctest_l2l3.js` (26) and
 `svctest_review.js` (16) migrate per §7 with counts preserved or grown;
 `svctest_ble.js` (26) untouched.
 
@@ -649,8 +744,8 @@ checks and the tie-break determinism case. `svctest_l2l3.js` (26) and
   checkpoints. Machines SHOULD cross-check ≥2 independent sources.
 - **Reorgs can invalidate proofs.** A command proven on a branch that later
   loses best-chain status would fail re-verification. The freshness log
-  (BMP-0002 §5.6) already prevents re-execution; actuation-on-reorg policy is
-  local (BMP-0000 §8.4), unchanged.
+  (BMP-0002 §5 step 6, freshness) already prevents re-execution;
+  actuation-on-reorg policy is local (BMP-0000 §8.4), unchanged.
 - **Fail-closed preserved.** No store / empty store / unlinked headers ⇒
   nothing verifies, the command waits (BMP-0003 §5). No partial state on any
   rejection (R2).
@@ -687,14 +782,26 @@ with bit-identical results. BMP-0004 graduates Draft → Stable when §9.4 gates
 
 ## 13. References
 
-- Bitcoin Core consensus sources (BSV inherits; identical rules):
-  - `src/arith_uint256.cpp` — `SetCompact` (compact decode, negative/overflow
-    flags): https://github.com/bitcoin/bitcoin/blob/master/src/arith_uint256.cpp
-  - `src/consensus/pow.cpp` — `CheckProofOfWork`, `GetBlockProof`:
-    https://github.com/bitcoin/bitcoin/blob/master/src/consensus/pow.cpp
-  - `src/chainparams.cpp` — `CMainParams` `powLimit`:
-    https://github.com/bitcoin/bitcoin/blob/master/src/chainparams.cpp
-  - Bitcoin SV mirror: https://github.com/bitcoin-sv/bitcoin-sv (same paths)
+- Bitcoin Core consensus sources, pinned to release tag **v32.1** (latest
+  stable at spec time; BSV inherits the same rules — pinning keeps the
+  citations from rotting as master moves):
+  - `src/arith_uint256.cpp` — `SetCompact` (compact decode; flags computed
+    after the size ≤ 3 shift):
+    https://github.com/bitcoin/bitcoin/blob/v32.1/src/arith_uint256.cpp
+  - `src/pow.cpp` — `CheckProofOfWork` / `CheckProofOfWorkImpl` /
+    `DeriveTarget` (validity check order):
+    https://github.com/bitcoin/bitcoin/blob/v32.1/src/pow.cpp
+    (formerly `src/consensus/pow.cpp`; that path no longer exists at v32.1)
+  - `src/chain.cpp` — `GetBitsProof` (block-work formula; formerly
+    `GetBlockProof` in `src/consensus/pow.cpp`):
+    https://github.com/bitcoin/bitcoin/blob/v32.1/src/chain.cpp
+  - `src/kernel/chainparams.cpp` — `CMainParams` `powLimit` (moved from
+    `src/chainparams.cpp`, which is now a wrapper):
+    https://github.com/bitcoin/bitcoin/blob/v32.1/src/kernel/chainparams.cpp
+  - Bitcoin SV node mirror: https://github.com/bitcoin-sv/bitcoin-sv —
+    same consensus rules; current master also uses `src/pow.cpp` (older
+    releases keep `src/consensus/pow.cpp`). BMP ports the rules, not the
+    file paths.
 - BMP-0000 §5 (tiers), §8.4 (local policy); BMP-0002 (L2); BMP-0003 (L3,
   refined here); BMP-0001 (BLE transport, untrusted ingress).
 - BRC-62 (BEEF), BRC-74 (BUMP): https://bsv-blockchain.github.io/
