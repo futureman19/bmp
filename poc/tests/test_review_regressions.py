@@ -1,0 +1,53 @@
+"""Regression tests from the 2026-11-20 weekly deep review.
+
+One section per confirmed finding (R# ids match poc/repro_review/repro.py).
+Each section landed with its fix commit; gates: pytest tests -q + js_tests/*.
+"""
+import json
+from pathlib import Path
+
+import pytest
+
+from svcode import spv
+
+VEC = json.loads(
+    (Path(__file__).resolve().parents[1] / "vectors" / "l3_live.json").read_text())
+BEEF = bytes.fromhex(VEC["beef_hex"])
+AUTH = VEC["authority_pubkey"]
+HEADERS = [bytes.fromhex(VEC["subject_block"]["header_hex"]),
+           bytes.fromhex(VEC["parent_block"]["header_hex"])]
+TIP = VEC["tip_height_at_fetch"]
+
+
+# ---------- R2: rejected L3 must not poison the freshness log ----------
+
+def test_r2_rejected_l3_leaves_freshness_log_untouched():
+    """A corrupt BUMP fails merkle inclusion AFTER verify_l2 ran; the caller's
+    `seen` log must stay empty so the legit command can still verify later."""
+    doc = spv.parse_beef(BEEF)
+    # Corrupt a level-1 merkle SIBLING (not the level-0 txid/client leaf) so the
+    # BRC-74 walk computes a wrong root and fails at the header-store lookup —
+    # an inclusion-stage rejection that runs AFTER verify_l2 staged freshness.
+    leaf = doc["bumps"][0]["path"][1][0]
+    assert leaf["hash"] is not None
+    pos = BEEF.find(leaf["hash"])
+    assert pos >= 0
+    bad = bytearray(BEEF)
+    bad[pos] ^= 0x01
+    seen = {}
+    with pytest.raises(ValueError, match="merkle root"):
+        spv.verify_l3(bytes(bad), AUTH, HEADERS, seen=seen, tip_height=TIP)
+    assert seen == {}
+    # the legit command still verifies afterwards and commits its outpoints
+    env = spv.verify_l3(BEEF, AUTH, HEADERS, seen=seen, tip_height=TIP)
+    assert env.payload.decode() == VEC["expected_payload"]
+    assert len(seen) == 1
+
+
+def test_r2_successful_l3_commits_freshness_and_blocks_double_spend():
+    seen = {}
+    spv.verify_l3(BEEF, AUTH, HEADERS, seen=seen, tip_height=TIP)
+    assert len(seen) == 1
+    # same txid again = idempotent duplicate (BMP-0002 §5.6), still allowed
+    spv.verify_l3(BEEF, AUTH, HEADERS, seen=seen, tip_height=TIP)
+    assert len(seen) == 1

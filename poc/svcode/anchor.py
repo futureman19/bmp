@@ -129,11 +129,15 @@ def verify_l2(raw: bytes, prevouts: list[dict], authority_vk_hex: str,
         raise ValueError("no fee paid")
 
     if seen is not None:                                         # 6. freshness
+        # Stage-then-commit: buffer the writes and apply them only after every
+        # check passed, so a rejected verification never mutates the caller's
+        # freshness log (BMP-0003 §5: no partial state on failure).
+        staged: dict[str, str] = {}
         for inp in parsed["inputs"]:
             key = inp["outpoint"].hex()
             prior = seen.get(key)
             if prior is not None and prior != parsed["txid"]:
                 raise ValueError("double-spend: outpoint already backs another command")
-        for inp in parsed["inputs"]:
-            seen[inp["outpoint"].hex()] = parsed["txid"]
+            staged[key] = parsed["txid"]
+        seen.update(staged)
     return env

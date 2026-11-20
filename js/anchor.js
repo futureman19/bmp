@@ -174,13 +174,17 @@ function verifyL2(raw, prevouts, authorityPubHex, seen = null){
   if (totalIn - totalOut <= 0n) throw new Error("no fee paid");   // 5. fee
 
   if (seen){                                                      // 6. freshness
+    // Stage-then-commit: buffer writes, apply only after every check passed,
+    // so a rejected verification never mutates the caller's freshness log.
+    const staged = new Map();
     for (const inp of parsed.inputs){
       const key = bytesToHex(inp.outpoint);
       const prior = seen.get(key);
       if (prior && prior !== parsed.txid)
         throw new Error("double-spend: outpoint already backs another command");
+      staged.set(key, parsed.txid);
     }
-    for (const inp of parsed.inputs) seen.set(bytesToHex(inp.outpoint), parsed.txid);
+    for (const [k, v] of staged) seen.set(k, v);
   }
   return env;
 }

@@ -222,7 +222,11 @@ def verify_l3(beef: bytes, authority_vk_hex: str, headers: list[bytes],
         prevouts.append({"txid": ptxid, "vout": pvout, "value": val,
                          "script_hex": script.hex()})
     # 4. full BMP-0002 §5 validation (envelope, authority, input sigs, fee, freshness)
-    env = verify_l2(subject["raw"], prevouts, authority_vk_hex, seen)
+    # Freshness state is staged: verify_l2 commits into a scratch copy which is
+    # merged into the caller's log only after ALL L3 checks pass (BMP-0003 §5:
+    # a command that fails verification must leave no partial state behind).
+    staged = dict(seen) if seen is not None else None
+    env = verify_l2(subject["raw"], prevouts, authority_vk_hex, staged)
 
     # 5. merkle inclusion: every tx carrying a BUMP must root into a held header
     root_index = {}
@@ -241,4 +245,6 @@ def verify_l3(beef: bytes, authority_vk_hex: str, headers: list[bytes],
             depth = tip_height - bump["block_height"] + 1
             if depth < min_depth:
                 raise ValueError(f"insufficient burial depth {depth} < {min_depth}")
+    if seen is not None and staged is not None:              # commit staged freshness
+        seen.update(staged)
     return env

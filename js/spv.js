@@ -158,7 +158,11 @@ function verifyL3(beef, authorityPubHex, headers, seen = null, tipHeight = null,
     prevouts.push({ txid: ptxid, vout: pvout, value: Number(o.value),
                     script_hex: bytesToHex(o.script) });
   }
-  const env = _A.verifyL2(subject.raw, prevouts, authorityPubHex, seen);  // 4. BMP-0002 §5
+  // 4. BMP-0002 §5. Freshness state is staged: verifyL2 commits into a scratch
+  // copy which is merged into the caller's log only after ALL L3 checks pass
+  // (BMP-0003 §5: a failed verification must leave no partial state behind).
+  const staged = seen ? new Map(seen) : null;
+  const env = _A.verifyL2(subject.raw, prevouts, authorityPubHex, staged);
 
   const rootIndex = new Map();                                    // 5. inclusion
   for (const h of headers){
@@ -176,6 +180,7 @@ function verifyL3(beef, authorityPubHex, headers, seen = null, tipHeight = null,
       if (depth < minDepth) throw new Error(`insufficient burial depth ${depth} < ${minDepth}`);
     }
   }
+  if (seen && staged) for (const [k, v] of staged) seen.set(k, v);  // commit staged freshness
   return env;
 }
 
