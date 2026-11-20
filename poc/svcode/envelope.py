@@ -106,7 +106,7 @@ class Envelope:
             raise EnvelopeError(
                 f"length mismatch: got {len(data)} bytes, header declares {HEADER_LEN + plen}"
             )
-        return cls(
+        env = cls(
             target_id=target_id,
             action=action,
             params=params,
@@ -115,6 +115,11 @@ class Envelope:
             signature=data[21:85],
             version=version,
         )
+        # __post_init__ auto-stamps a fresh nonce when nonce==0 (a convenience
+        # for NEW envelopes). Parsing must preserve the exact wire nonce — even
+        # 0 — or the digest/serialize roundtrip breaks and verify() fails.
+        env.nonce = nonce
+        return env
 
 
 def demo_envelope(text: str, target_id: int = 0x53564331, action: int = 0x00FF) -> Envelope:

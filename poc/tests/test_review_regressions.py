@@ -86,3 +86,23 @@ def test_r5_duplicate_outpoint_within_tx_rejected():
     raw, _txid, prev = anchor.build_l2_tx(env.serialize(), [u, u], 2)
     with pytest.raises(ValueError, match="duplicate outpoint"):
         anchor.verify_l2(bytes.fromhex(raw), prev, pubkey_hex(sk), {})
+
+
+# ---------- R7: parse must preserve a zero wire nonce ----------
+
+def test_r7_parse_preserves_zero_nonce():
+    """Envelope.__post_init__ auto-stamps nonce=0 -> time() for new envelopes;
+    parse must NOT apply that convenience, or a valid nonce-0 wire envelope
+    fails verify and roundtrip (JS parse already preserves it)."""
+    from svcode.envelope import Envelope
+    from svcode.crypto import generate_key
+    sk = generate_key()
+    env = Envelope(target_id=0x53564331, action=0x00FF, payload=b"NONCE0")
+    env.nonce = 0                      # force wire nonce 0 (post-init stamps otherwise)
+    env.sign(sk)
+    wire = env.serialize()
+    assert wire[15:19] == b"\x00\x00\x00\x00"
+    parsed = Envelope.parse(wire)
+    assert parsed.nonce == 0
+    assert parsed.verify(sk.verifying_key)
+    assert parsed.serialize() == wire

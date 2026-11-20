@@ -69,5 +69,16 @@ const TIP = l3.tip_height_at_fetch;
          'duplicate outpoint', 'R5 duplicate outpoint within tx rejected');
 }
 
+/* ---------- R7: parse must preserve a zero wire nonce (JS parity) ---------- */
+{
+  const payload = new Uint8Array([0x4e, 0x4f, 0x4e, 0x43, 0x45, 0x30]); // "NONCE0"
+  const wire = SVC.buildEnvelopeFields(0x53564331, 0x00FF, new Uint8Array(8), 0,
+                                       payload, new Uint8Array(64));
+  const p = SVC.parseEnvelope(wire);
+  ok(p.nonce === 0, 'R7 JS parse preserves nonce 0');
+  const rt = SVC.buildEnvelopeFields(p.targetId, p.action, p.params, p.nonce, p.payload, p.signature);
+  ok(rt.length === wire.length && rt.every((b, i) => b === wire[i]), 'R7 JS nonce-0 roundtrip');
+}
+
 console.log(`svctest_review: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
