@@ -54,12 +54,17 @@ def test_corrupt_header_rejected():
 
 
 def test_missing_header_rejected():
-    # only the parent header provided; subject's root lookup must fail
-    only_parent = [h for h in HEADERS
-                   if spv.verify_header(h)["merkle_root"] !=
-                   spv.bump_root(spv.parse_beef(BEEF)["bumps"][1], L3["subject_txid"])]
+    # A valid header from a DIFFERENT block (genesis) does not contain the
+    # subject's merkle root, so the subject's inclusion lookup must fail.
+    # The live vector's parent and subject share block 969795 (one header
+    # proves both), so an unrelated block header isolates the missing-root case.
+    genesis = bytes.fromhex(
+        "0100000000000000000000000000000000000000000000000000000000000000"
+        "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa"
+        "4b1e5e4a29ab5f49ffff001d1dac2b7c")
+    spv.verify_header(genesis)  # sanity: a real PoW header
     with pytest.raises(ValueError, match="merkle root not in header store"):
-        spv.verify_l3(BEEF, AUTH, only_parent, seen={}, tip_height=TIP)
+        spv.verify_l3(BEEF, AUTH, [genesis], seen={}, tip_height=TIP)
 
 
 def test_wrong_authority_rejected():

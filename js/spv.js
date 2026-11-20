@@ -144,6 +144,14 @@ function verifyL3(beef, authorityPubHex, headers, seen = null, tipHeight = null,
   const subject = doc.txs[doc.txs.length - 1];                    // 2. subject = last
   const byTxid = new Map(doc.txs.map(t => [t.txid, t]));
 
+  // BMP-0003 §5: "L3 without headers degrades safely — nothing verifies."
+  // The subject MUST carry a BUMP proving inclusion into a held header; a
+  // BEEF stripped of all BUMPs must not pass as L3 with an empty header store.
+  if (subject.bumpIndex === null)
+    throw new Error("L3 requires a BUMP for the subject transaction");
+  if (!headers.length)
+    throw new Error("L3 requires a non-empty header store");
+
   const parsedSubject = _A.parseTx(subject.raw);
   const prevouts = [];                                            // 3. derive evidence
   for (const inp of parsedSubject.inputs){

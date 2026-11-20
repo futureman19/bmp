@@ -102,9 +102,9 @@ ok(new TextDecoder().decode(env3.payload) === l3.expected_payload, 'verifyL3 PAS
   throws(() => SVSPV.verifyL3(beef, l3.authority_pubkey, [bad, headers[1]], new Map(), l3.tip_height_at_fetch),
          'proof-of-work', 'corrupt header rejected');
 }
-// both txs share block 969795 → same header; empty store = missing header
+// empty header store is rejected upfront (BMP-0003 §5: nothing verifies without headers)
 throws(() => SVSPV.verifyL3(beef, l3.authority_pubkey, [], new Map(), l3.tip_height_at_fetch),
-       'merkle root not in header store', 'missing header rejected');
+       'non-empty header store', 'missing header rejected');
 throws(() => SVSPV.verifyL3(beef, l3.authority_pubkey, headers, new Map(), l3.tip_height_at_fetch, l3.tip_height_at_fetch + 10),
        'insufficient burial depth', 'depth policy enforced');
 

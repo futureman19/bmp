@@ -51,3 +51,21 @@ def test_r2_successful_l3_commits_freshness_and_blocks_double_spend():
     # same txid again = idempotent duplicate (BMP-0002 §5.6), still allowed
     spv.verify_l3(BEEF, AUTH, HEADERS, seen=seen, tip_height=TIP)
     assert len(seen) == 1
+
+
+# ---------- R1: L3 must not pass without header-backed inclusion ----------
+
+def test_r1_stripped_beef_zero_bumps_rejected():
+    """BMP-0003 §5: a BEEF stripped of all BUMPs must not verify as L3 even at
+    min_depth=1 with valid envelope/signatures — nothing verifies without
+    headers. The subject must carry a BUMP proving inclusion."""
+    doc = spv.parse_beef(BEEF)
+    stripped = (bytes.fromhex("0100beef") + spv.ser_varint(0) + spv.ser_varint(2)
+                + doc["txs"][0]["raw"] + b"\x00" + doc["txs"][1]["raw"] + b"\x00")
+    with pytest.raises(ValueError, match="BUMP for the subject"):
+        spv.verify_l3(stripped, AUTH, [], seen={}, tip_height=TIP, min_depth=1)
+
+
+def test_r1_empty_header_store_rejected():
+    with pytest.raises(ValueError, match="non-empty header store"):
+        spv.verify_l3(BEEF, AUTH, [], seen={}, tip_height=TIP, min_depth=1)

@@ -206,6 +206,15 @@ def verify_l3(beef: bytes, authority_vk_hex: str, headers: list[bytes],
     subject = doc["txs"][-1]                                 # 2. subject = last
     by_txid = {t["txid"]: t for t in doc["txs"]}
 
+    # BMP-0003 §5: "L3 without headers degrades safely — nothing verifies."
+    # The subject MUST carry a BUMP proving inclusion into a held header. A
+    # BEEF stripped of all BUMPs (subject bump_index None) must not pass as L3,
+    # and an empty header store can never prove inclusion.
+    if subject["bump_index"] is None:
+        raise ValueError("L3 requires a BUMP for the subject transaction")
+    if not headers:
+        raise ValueError("L3 requires a non-empty header store")
+
     parsed_subject = txm.parse_tx(subject["raw"])
     # 3. derive prevout evidence from included ancestors (no separate bundle)
     prevouts = []

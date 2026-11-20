@@ -41,5 +41,16 @@ const TIP = l3.tip_height_at_fetch;
   ok(seen.size === 1, 'R2 idempotent re-verify keeps log size');
 }
 
+/* ---------- R1: L3 must not pass without header-backed inclusion ---------- */
+{
+  const doc = SVSPV.parseBeef(BEEF);
+  const stripped = new Uint8Array([0x01, 0x00, 0xbe, 0xef, 0x00, 0x02,
+    ...doc.txs[0].raw, 0x00, ...doc.txs[1].raw, 0x00]);
+  throws(() => SVSPV.verifyL3(stripped, l3.authority_pubkey, [], new Map(), TIP, 1),
+         'BUMP for the subject', 'R1 stripped BEEF (zero BUMPs) rejected');
+  throws(() => SVSPV.verifyL3(BEEF, l3.authority_pubkey, [], new Map(), TIP, 1),
+         'non-empty header store', 'R1 empty header store rejected');
+}
+
 console.log(`svctest_review: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
