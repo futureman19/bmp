@@ -44,6 +44,7 @@ class Reassembler {
     const buf = new Uint8Array(this._count * this._mtu);
     for (let i = 0; i < this._count; i++) buf.set(this._frags.get(i), i * this._mtu);
     this._frags = new Map();
+    if (buf.length < 8) return null;   // parity with ble.py: framed header is 8 bytes
     const clen = new DataView(buf.buffer).getUint32(0);
     if (clen > 65535 + 85) return null;
     const total = Math.ceil((8 + clen) / 32) * 32;

@@ -95,5 +95,15 @@ r = new SVBLE.Reassembler(); got = null;
 for (const f of [frA[0], frA[0], frA[1], frA[1], frA[2], frA[0], ...frA]) got = r.feed(f) || got;
 ok(got && hex(got) === A.stream_hex, 'duplicates harmless');
 
+// R6: a reassembled buffer shorter than the 8-byte framed header must return
+// null (parity with ble.py), not throw RangeError from DataView.getUint32.
+{
+  const tiny = new Uint8Array([0x53, 0x56, 0x07, 0x00, 0x01, 0xAA]); // cnt=1, mtu=1
+  const rr = new SVBLE.Reassembler();
+  let threw = false, res;
+  try { res = rr.feed(tiny); } catch (e) { threw = true; }
+  ok(!threw && res === null, 'R6 tiny reassembled buffer returns null (no RangeError)');
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
