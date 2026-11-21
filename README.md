@@ -23,7 +23,7 @@ buried in block 969,795) verified layer-by-layer in your browser, trusting no se
 | [BMP-0001](spec/BMP-0001-bmp-ble.md) | BMP-BLE — connectionless Bluetooth LE advertising transport | **Stable** |
 | [BMP-0002](spec/BMP-0002-l2-on-chain-anchoring.md) | On-Chain Anchoring (L2) — envelopes in fee-paying transactions, offline payment evidence | **Stable** |
 | [BMP-0003](spec/BMP-0003-l3-spv-inclusion.md) | SPV Inclusion (L3) — BEEF-packaged commands, BUMP merkle proofs vs local headers | **Stable** |
-| [BMP-0004](spec/BMP-0004-trusted-header-store.md) | Trusted header store + consensus PoW target validation (L3 hardening, review R3) | Draft |
+| [BMP-0004](spec/BMP-0004-trusted-header-store.md) | Trusted header store + consensus PoW target validation (L3 hardening, review R3) | **Stable** |
 | [SV-0001](https://github.com/futureman19/sv-codes) | SV Code visual matrix transport (camera-readable animated grids) — companion product repo | **Stable** |
 
 **Status labels:** *Stable* = two independent implementations (Python `poc/` +

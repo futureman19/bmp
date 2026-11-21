@@ -4,7 +4,7 @@
 |---|---|
 | **Number** | BMP-0004 |
 | **Title** | Trusted Header Store + Consensus PoW Target Validation (L3 hardening) |
-| **Status** | **Draft** |
+| **Status** | **Stable** |
 | **Category** | Protocol Specification (Bitcoin Machine Protocol) |
 | **Created** | 2026-11-20 |
 | **Requires** | BMP-0000, BMP-0003 |

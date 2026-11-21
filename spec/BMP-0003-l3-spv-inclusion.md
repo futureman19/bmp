@@ -67,7 +67,12 @@ and its freshness log:
    validation: 80 bytes, proof-of-work (`SHA256d(header) ≤ target(bits)`), and
    linkage into the receiver's known chain. Headers arrive by any means —
    provisioning, occasional gateway sync, or broadcast over BMP transports as
-   ordinary content.
+   ordinary content. **BMP-0004 is the normative header-trust definition:**
+   Core-compatible compact-target/PoW validation (§3), the trusted
+   most-chainwork header store (§4), and store-backed `verify_l3` (§5) —
+   which also refines steps 3 and 5: lookup is by merkle root alone (the
+   self-asserted `BUMP.blockHeight` is never consulted) and burial depth uses
+   store-derived heights on both sides (BMP-0004 §5.2.6).
 5. **Burial depth (policy).** Receivers SHOULD require `tip_height −
    BUMP.blockHeight + 1 ≥ min_depth`; `min_depth = 1` for low-value commands,
    higher for physical actuation of consequence (local policy, BMP-0000 §8.4).
@@ -92,8 +97,9 @@ this document.
 
 - **Header store is the trust root.** An attacker who can feed a machine a
   fraudulent header *chain* with valid PoW has spent real hash power; the
-  chainwork comparison in the receiver's store is the defense. Machines SHOULD
-  pin their tip provisioning to multiple independent sources.
+  chainwork comparison in the receiver's store is the defense (realized by
+  BMP-0004 §4.3: most-chainwork tip selection with incumbent tie-break).
+  Machines SHOULD pin their tip provisioning to multiple independent sources.
 - **L3 without headers degrades safely:** nothing verifies, the command waits
   — it never partially executes.
 - **Freshness still applies:** L3 inclusion proves the spend happened; the
