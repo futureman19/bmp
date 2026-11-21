@@ -88,25 +88,37 @@ const h0 = SVSPV.verifyHeader(headers[0]);
 ok(h0.hash === l3.subject_block.blockhash, 'header hash == WoC blockhash');
 ok(h0.hash === ref.l3.subject_header_hash, 'header hash == Python');
 
-const env3 = SVSPV.verifyL3(beef, l3.authority_pubkey, headers, new Map(), l3.tip_height_at_fetch, 1);
+// BMP-0004 §6 PoC default trust profile: subject header anchored at its
+// recorded height; parent header is a same-block duplicate no-op (§4.2).
+const store = SVSPV.createHeaderStore({ anchors: [{ header: headers[0], height: l3.subject_block.height }] });
+store.add(headers[1]);
+const env3 = SVSPV.verifyL3(beef, l3.authority_pubkey, store, new Map(), 1);
 ok(new TextDecoder().decode(env3.payload) === l3.expected_payload, 'verifyL3 PASS + payload');
 
 /* ---------- L3: rejection parity ---------- */
 {
   const bad = unhex(l3.beef_hex); bad[60] ^= 0xFF;
-  throws(() => SVSPV.verifyL3(bad, l3.authority_pubkey, headers, new Map(), l3.tip_height_at_fetch),
+  throws(() => SVSPV.verifyL3(bad, l3.authority_pubkey, store, new Map()),
          '', 'corrupt BUMP rejected');
 }
 {
+  // BMP-0004 §7: the corrupt header fails at store.add() (§3.2 PoW gate);
+  // rejected adds leave store state unchanged (§4.6.6).
   const bad = unhex(l3.subject_block.header_hex); bad[10] ^= 0xFF;
-  throws(() => SVSPV.verifyL3(beef, l3.authority_pubkey, [bad, headers[1]], new Map(), l3.tip_height_at_fetch),
-         'proof-of-work', 'corrupt header rejected');
+  throws(() => store.add(bad), 'proof-of-work', 'corrupt header rejected at store.add');
+  ok(store.bestTip().hash === l3.subject_block.blockhash && store.size === 1,
+     'rejected add leaves store unchanged');
 }
-// empty header store is rejected upfront (BMP-0003 §5: nothing verifies without headers)
-throws(() => SVSPV.verifyL3(beef, l3.authority_pubkey, [], new Map(), l3.tip_height_at_fetch),
-       'non-empty header store', 'missing header rejected');
-throws(() => SVSPV.verifyL3(beef, l3.authority_pubkey, headers, new Map(), l3.tip_height_at_fetch, l3.tip_height_at_fetch + 10),
-       'insufficient burial depth', 'depth policy enforced');
+// missing header: genesis-anchored store lacks the subject's merkle root
+// (mirrors the Python migration; genesis header passes §3.3 at height 0).
+const GENESIS = unhex('0100000000000000000000000000000000000000000000000000000000000000' +
+  '000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa' +
+  '4b1e5e4a29ab5f49ffff001d1dac2b7c');
+throws(() => SVSPV.verifyL3(beef, l3.authority_pubkey,
+       SVSPV.createHeaderStore({ anchors: [{ header: GENESIS, height: 0 }] }), new Map()),
+       'merkle root not in header store', 'missing header rejected');
+throws(() => SVSPV.verifyL3(beef, l3.authority_pubkey, store, new Map(), l3.tip_height_at_fetch + 10),
+       'insufficient burial depth', 'depth policy enforced (store-derived tip)');
 
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

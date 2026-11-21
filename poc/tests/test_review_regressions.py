@@ -2,7 +2,8 @@
 
 One section per confirmed finding (R# ids match poc/repro_review/repro.py).
 Each section landed with its fix commit; gates: pytest tests -q + js_tests/*.
-"""
+BMP-0004 migration: L3 cases run against a trusted HeaderStore (§5); R1
+empty-store cases use an anchorless store (len == 0 ⇒ same message)."""
 import json
 from pathlib import Path
 
@@ -16,7 +17,13 @@ BEEF = bytes.fromhex(VEC["beef_hex"])
 AUTH = VEC["authority_pubkey"]
 HEADERS = [bytes.fromhex(VEC["subject_block"]["header_hex"]),
            bytes.fromhex(VEC["parent_block"]["header_hex"])]
-TIP = VEC["tip_height_at_fetch"]
+SUBJ_H = VEC["subject_block"]["height"]
+
+
+def make_store() -> spv.HeaderStore:
+    store = spv.HeaderStore([(HEADERS[0], SUBJ_H)])
+    store.add(HEADERS[1])                # same block ⇒ duplicate no-op
+    return store
 
 
 # ---------- R2: rejected L3 must not poison the freshness log ----------
@@ -36,20 +43,21 @@ def test_r2_rejected_l3_leaves_freshness_log_untouched():
     bad[pos] ^= 0x01
     seen = {}
     with pytest.raises(ValueError, match="merkle root"):
-        spv.verify_l3(bytes(bad), AUTH, HEADERS, seen=seen, tip_height=TIP)
+        spv.verify_l3(bytes(bad), AUTH, make_store(), seen=seen)
     assert seen == {}
     # the legit command still verifies afterwards and commits its outpoints
-    env = spv.verify_l3(BEEF, AUTH, HEADERS, seen=seen, tip_height=TIP)
+    env = spv.verify_l3(BEEF, AUTH, make_store(), seen=seen)
     assert env.payload.decode() == VEC["expected_payload"]
     assert len(seen) == 1
 
 
 def test_r2_successful_l3_commits_freshness_and_blocks_double_spend():
     seen = {}
-    spv.verify_l3(BEEF, AUTH, HEADERS, seen=seen, tip_height=TIP)
+    store = make_store()
+    spv.verify_l3(BEEF, AUTH, store, seen=seen)
     assert len(seen) == 1
     # same txid again = idempotent duplicate (BMP-0002 §5.6), still allowed
-    spv.verify_l3(BEEF, AUTH, HEADERS, seen=seen, tip_height=TIP)
+    spv.verify_l3(BEEF, AUTH, store, seen=seen)
     assert len(seen) == 1
 
 
@@ -63,12 +71,13 @@ def test_r1_stripped_beef_zero_bumps_rejected():
     stripped = (bytes.fromhex("0100beef") + spv.ser_varint(0) + spv.ser_varint(2)
                 + doc["txs"][0]["raw"] + b"\x00" + doc["txs"][1]["raw"] + b"\x00")
     with pytest.raises(ValueError, match="BUMP for the subject"):
-        spv.verify_l3(stripped, AUTH, [], seen={}, tip_height=TIP, min_depth=1)
+        spv.verify_l3(stripped, AUTH, spv.HeaderStore(), seen={}, min_depth=1)
 
 
 def test_r1_empty_header_store_rejected():
+    # Anchorless store: nothing can link, len == 0 (§4.1.5) ⇒ R1 verbatim.
     with pytest.raises(ValueError, match="non-empty header store"):
-        spv.verify_l3(BEEF, AUTH, [], seen={}, tip_height=TIP, min_depth=1)
+        spv.verify_l3(BEEF, AUTH, spv.HeaderStore(), seen={}, min_depth=1)
 
 
 # ---------- R5: a tx must not spend the same outpoint twice ----------

@@ -74,8 +74,13 @@ def main() -> None:
     print(f"    BEEF: {len(beef)} bytes (parent {len(parent_raw)}B + subject {len(subj_raw)}B + 2 BUMPs)")
 
     print("[3] verify_l3 …")
-    env = spv.verify_l3(beef, AUTH_PUB, [subj_hdr, parent_hdr],
-                        seen={}, tip_height=tip, min_depth=1)
+    # BMP-0004 §6 PoC default trust profile: the fetched subject header is
+    # provisioned as the store anchor at its recorded height; the parent
+    # header (same block 969795) enters via add() as a duplicate no-op.
+    # Burial depth is store-derived — tip_height is provenance metadata only.
+    store = spv.HeaderStore([(subj_hdr, subj_h)])
+    store.add(parent_hdr)
+    env = spv.verify_l3(beef, AUTH_PUB, store, seen={}, min_depth=1)
     print(f"    PASS — action {env.action_name}, payload {env.payload.decode()!r}")
     print("    envelope authority sig ✓ · input sigs vs BEEF ancestors ✓ · "
           "fee ✓ · merkle inclusion of both TXs ✓ · header PoW ✓")

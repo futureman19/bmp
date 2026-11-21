@@ -1,5 +1,7 @@
-/* spv.js — BMP-0003 (L3) SPV inclusion verifier, zero-dependency JS.
-   Mirrors poc/svcode/spv.py exactly. Browser + Node (needs SVC + SVANCHOR). */
+/* spv.js — BMP-0003 (L3) SPV inclusion verifier + BMP-0004 header trust,
+   zero-dependency JS. Mirrors poc/svcode/spv.py exactly.
+   Browser + Node (needs SVC + SVANCHOR). BigInt throughout; no floats in
+   target/hash/work math. */
 "use strict";
 const SVSPV = (() => {
 const _SVC = (typeof module !== "undefined") ? require("./svc.js") : SVC;
@@ -117,29 +119,228 @@ function parseBeef(b){
   return { bumps, txs };
 }
 
-/* ---------- block headers ---------- */
-function targetFromBits(bits){
-  const exp = bits >>> 24, mant = BigInt(bits & 0x007FFFFF);
-  if (bits & 0x00800000) throw new Error("negative target");
-  return exp >= 3 ? mant << (8n * BigInt(exp - 3)) : mant >> (8n * BigInt(3 - exp));
+/* ---------- BMP-0004 §3: consensus constants, compact targets, work ---------- */
+const MAINNET_POW_LIMIT = (1n << 224n) - 1n;
+const MAINNET_GENESIS_HASH = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+
+/* Core v32.1 arith_uint256::SetCompact port -> {target, negative, overflow}.
+   The size<=3 right-shift happens BEFORE the flags are computed (the
+   shift-order bug this spec was written against). Integer-only (BigInt). */
+function decodeCompact(bits){
+  const size = bits >>> 24;
+  let word = bits & 0x007FFFFF;
+  let target;
+  if (size <= 3){
+    word >>>= 8 * (3 - size);
+    target = BigInt(word);
+  } else {
+    target = BigInt(word) << BigInt(8 * (size - 3));
+  }
+  const negative = word !== 0 && (bits & 0x00800000) !== 0;
+  const overflow = word !== 0 && (
+    size > 34 ||
+    (word > 0xFF && size > 33) ||
+    (word > 0xFFFF && size > 32));
+  return { target, negative, overflow };
 }
 
-function verifyHeader(header){
+/* nBits -> target with full BMP-0004 §3.2 consensus validity. Throws with
+   the pinned substrings 'negative target', 'zero target', 'target overflow',
+   'target exceeds powLimit'. powLimit is injectable (§3.2); it gates the
+   powLimit check only, never the consensus flags. */
+function targetFromBits(bits, powLimit = MAINNET_POW_LIMIT){
+  const { target, negative, overflow } = decodeCompact(bits);
+  if (negative) throw new Error("negative target");
+  if (target === 0n) throw new Error("zero target");
+  if (overflow) throw new Error("target overflow");
+  if (target > powLimit) throw new Error("target exceeds powLimit");
+  return target;
+}
+
+/* BMP-0004 §3.4 floor form: ((2^256 − 1 − target) / (target + 1)) + 1
+   (BigInt division floors). Equals Core GetBlockProof exactly for every
+   valid target; the ceil variant is forbidden. */
+function blockWork(target){
+  return ((1n << 256n) - 1n - target) / (target + 1n) + 1n;
+}
+
+/* ---------- block headers ---------- */
+function verifyHeader(header, powLimit = MAINNET_POW_LIMIT){
   if (header.length !== 80) throw new Error("header must be 80 bytes");
   const bits = (header[72] | header[73]<<8 | header[74]<<16 | header[75]<<24) >>> 0;
+  const target = targetFromBits(bits, powLimit);
   const digest = sha256d(header);
   const hnum = bytesToBigLE(digest);
-  if (hnum > targetFromBits(bits)) throw new Error("header fails proof-of-work");
+  if (hnum > target) throw new Error("header fails proof-of-work");
   return { hash: bytesToHex(digest.slice().reverse()),
            merkleRoot: header.slice(36, 68),
            prevHash: header.slice(4, 36) };
 }
 function bytesToBigLE(b){ let v = 0n; for (let i = b.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(b[i]); return v; }
 
-/* ---------- BMP-0003 §3 pipeline ---------- */
-/* headers: array of 80-byte Uint8Array. seen: optional Map for freshness.
-   tipHeight: optional known tip for burial depth. Returns the envelope. */
-function verifyL3(beef, authorityPubHex, headers, seen = null, tipHeight = null, minDepth = 1){
+/* ---------- BMP-0004 §4: trusted header store ---------- */
+/* createHeaderStore({ anchors: [{header, height}, ...], powLimit, maxOrphans })
+   Mirrors Python HeaderStore exactly:
+   - anchors (§4.1): full §3.2 validity, asserted heights, same-height ⇒
+     same-hash ('anchor height conflict'), height-0 genesis rule under
+     MAINNET_POW_LIMIT, idempotent duplicates, empty list allowed (inert).
+   - add() (§4.2): validity → duplicate no-op → parent lookup against
+     adopted/anchors ONLY → fork choice → transitive FIFO orphan drain.
+   - best tip = max cumulative work; ties keep the incumbent (§4.3).
+   - getByRoot() answers from the BEST CHAIN only (§4.5).
+   - size counts anchors + adopted headers, never orphans (§4.4).
+   Info: {hash(display hex), merkleRoot(internal bytes), prevHash(internal
+   bytes), height(Number), work(BigInt)} — first three keys are exactly
+   verifyHeader's return shape. */
+function createHeaderStore({ anchors = [], powLimit = MAINNET_POW_LIMIT,
+                             maxOrphans = 1024 } = {}){
+  if (typeof powLimit !== "bigint" || powLimit <= 0n)
+    throw new Error("powLimit must be a positive BigInt");
+  if (!Number.isInteger(maxOrphans) || maxOrphans < 0)
+    throw new Error("maxOrphans must be a non-negative integer");
+  const byHash = new Map();      // display hash hex -> info
+  const orphans = new Map();     // display hash hex -> {base, target}, FIFO
+  const anchorHashes = [];
+  const anchorHeights = new Map(); // asserted height -> anchor hash
+  let tip = null;
+  let rootIndex = new Map();     // merkle root hex (internal) -> info
+
+  function parentOf(base){
+    // prevHash is internal byte order; byHash is keyed by display hex
+    return byHash.get(bytesToHex(base.prevHash.slice().reverse())) || null;
+  }
+  function rebuildRootIndex(){
+    rootIndex = new Map();
+    if (tip === null) return;
+    const chain = [];
+    let cur = tip;
+    while (cur !== null){ chain.push(cur); cur = parentOf(cur); }
+    chain.sort((a, b) => a.height - b.height);
+    for (const info of chain){
+      const key = bytesToHex(info.merkleRoot);
+      if (!rootIndex.has(key)) rootIndex.set(key, info);  // first occurrence wins
+    }
+  }
+  function considerTip(info){
+    if (tip === null || info.work > tip.work){   // ties keep incumbent (§4.3)
+      tip = info;
+      rebuildRootIndex();
+    }
+  }
+  function adopt(base, target, parent){
+    const info = { hash: base.hash, merkleRoot: base.merkleRoot,
+                   prevHash: base.prevHash, height: parent.height + 1,
+                   work: parent.work + blockWork(target) };
+    byHash.set(info.hash, info);
+    considerTip(info);                            // §4.3
+    return info;
+  }
+  function parkOrphan(base, target){
+    if (!orphans.has(base.hash))                  // keep first slot (FIFO)
+      orphans.set(base.hash, { base, target });
+    while (orphans.size > maxOrphans){            // §4.4 silent eviction
+      orphans.delete(orphans.keys().next().value);
+    }
+  }
+  function drainOrphans(){
+    // Transitive drain in pool insertion order (FIFO); repeat until a full
+    // pass adopts nothing. Runs after every successful adoption (§4.2.5).
+    for (;;){
+      let adoptedAny = false;
+      for (const h of Array.from(orphans.keys())){
+        const entry = orphans.get(h);
+        const parent = parentOf(entry.base);
+        if (parent !== null){
+          orphans.delete(h);
+          adopt(entry.base, entry.target, parent);
+          adoptedAny = true;
+        }
+      }
+      if (!adoptedAny) break;
+    }
+  }
+  function addAnchor(header, height){
+    if (!Number.isInteger(height) || height < 0)
+      throw new Error("anchor height must be a non-negative integer");
+    const base = verifyHeader(header, powLimit);
+    if (powLimit === MAINNET_POW_LIMIT && height === 0 &&
+        base.hash !== MAINNET_GENESIS_HASH)
+      throw new Error("height-0 anchor must hash to the mainnet genesis block");
+    const h = base.hash;
+    // §4.1.2: two anchors asserting the same height MUST have the same hash
+    if (anchorHeights.has(height) && anchorHeights.get(height) !== h)
+      throw new Error("anchor height conflict");
+    if (byHash.has(h)){
+      if (byHash.get(h).height !== height) throw new Error("anchor height conflict");
+      return;                                     // idempotent duplicate anchor
+    }
+    const bits = (header[72] | header[73]<<8 | header[74]<<16 | header[75]<<24) >>> 0;
+    const target = targetFromBits(bits, powLimit);
+    const info = { hash: base.hash, merkleRoot: base.merkleRoot,
+                   prevHash: base.prevHash, height, work: blockWork(target) };
+    byHash.set(h, info);
+    anchorHashes.push(h);
+    anchorHeights.set(height, h);
+    considerTip(info);
+  }
+
+  for (const a of anchors) addAnchor(a.header, a.height);
+
+  return {
+    /* add(header) -> info | null (§4.2). Throws on §3.2 invalidity or height
+       conflicts; a rejected add leaves all state unchanged (§4.6.6). */
+    add(header){
+      const base = verifyHeader(header, powLimit);          // step 1
+      const h = base.hash;
+      if (byHash.has(h)){                                   // step 2
+        const existing = byHash.get(h);
+        const parent = parentOf(base);
+        if (parent !== null && parent.height + 1 !== existing.height)
+          throw new Error("duplicate header height conflict");
+        return existing;
+      }
+      const bits = (header[72] | header[73]<<8 | header[74]<<16 | header[75]<<24) >>> 0;
+      const target = targetFromBits(bits, powLimit);
+      const parent = parentOf(base);                        // step 3
+      if (parent === null){ parkOrphan(base, target); return null; }
+      const info = adopt(base, target, parent);             // step 4
+      drainOrphans();                                       // step 5
+      return info;
+    },
+    /* addMany(headers): apply add() in order; returns the number of calls
+       that returned info (adopted or duplicate no-op). Parked orphans do
+       not count. */
+    addMany(headers){
+      let n = 0;
+      for (const header of headers) if (this.add(header) !== null) n++;
+      return n;
+    },
+    bestTip(){ return tip; },
+    /* Best-chain header with this merkle root (internal byte order), else
+       null. Losing-fork and orphan roots never match (§4.5). */
+    getByRoot(merkleRoot){ return rootIndex.get(bytesToHex(merkleRoot)) || null; },
+    has(hashHex){ return byHash.has(hashHex); },
+    get size(){ return byHash.size; },
+    /* inspection helpers (tests / parity refs) */
+    orphanHashes(){ return Array.from(orphans.keys()); },
+    anchorHashes(){ return anchorHashes.slice(); },
+    get powLimit(){ return powLimit; },
+  };
+}
+
+/* ---------- BMP-0004 §5: L3 pipeline (store-backed) ---------- */
+/* store: a createHeaderStore() object — raw header arrays are no longer
+   accepted (§5.1, no list fallback). tipHeight is REMOVED: burial depth is
+   store-derived, depth = store.bestTip().height − matched.height + 1, using
+   the STORE-assigned height of the matched header (never the BUMP's
+   self-reported blockHeight — §5.2.6). seen: optional Map for freshness.
+   Returns the envelope. */
+function verifyL3(beef, authorityPubHex, store, seen = null, minDepth = 1){
+  if (store === null || typeof store !== "object" ||
+      typeof store.getByRoot !== "function" || typeof store.bestTip !== "function" ||
+      typeof store.size !== "number")
+    throw new TypeError("verifyL3 requires a header store (BMP-0004 §5.1); " +
+                        "raw header arrays are no longer accepted");
   const doc = parseBeef(beef);                                    // 1. parse
   const subject = doc.txs[doc.txs.length - 1];                    // 2. subject = last
   const byTxid = new Map(doc.txs.map(t => [t.txid, t]));
@@ -147,9 +348,10 @@ function verifyL3(beef, authorityPubHex, headers, seen = null, tipHeight = null,
   // BMP-0003 §5: "L3 without headers degrades safely — nothing verifies."
   // The subject MUST carry a BUMP proving inclusion into a held header; a
   // BEEF stripped of all BUMPs must not pass as L3 with an empty header store.
+  // (R1, verbatim.)
   if (subject.bumpIndex === null)
     throw new Error("L3 requires a BUMP for the subject transaction");
-  if (!headers.length)
+  if (store.size === 0)
     throw new Error("L3 requires a non-empty header store");
 
   const parsedSubject = _A.parseTx(subject.raw);
@@ -172,27 +374,34 @@ function verifyL3(beef, authorityPubHex, headers, seen = null, tipHeight = null,
   const staged = seen ? new Map(seen) : null;
   const env = _A.verifyL2(subject.raw, prevouts, authorityPubHex, staged);
 
-  const rootIndex = new Map();                                    // 5. inclusion
-  for (const h of headers){
-    const info = verifyHeader(h);                                 // PoW per header
-    rootIndex.set(bytesToHex(info.merkleRoot), info);
-  }
+  // 5. merkle inclusion: every tx carrying a BUMP must root into a BEST-CHAIN
+  // header of the store (§4.5 / §5.2.5). Losing-fork and orphan roots fail
+  // here — inclusion off the best chain is not settlement.
+  const matched = [];
   for (const t of doc.txs){
     if (t.bumpIndex === null) continue;
     const bump = doc.bumps[t.bumpIndex];
     const root = bumpRoot(bump, t.txid);                          // 5a. BRC-74 walk
-    if (!rootIndex.has(bytesToHex(root)))
+    const hdr = store.getByRoot(root);
+    if (hdr === null)
       throw new Error(`tx ${t.txid.slice(0, 16)}…: merkle root not in header store`);
-    if (tipHeight !== null){                                      // 5b. burial depth
-      const depth = tipHeight - bump.blockHeight + 1;
-      if (depth < minDepth) throw new Error(`insufficient burial depth ${depth} < ${minDepth}`);
-    }
+    matched.push(hdr);
+  }
+  // 6. burial depth (policy): STORE-derived heights on both sides (§5.2.6).
+  // store.size > 0 guarantees a non-null tip (§4.6 / §5.2 step 3).
+  const tip = store.bestTip();
+  if (tip === null) throw new Error("L3 requires a non-empty header store");
+  for (const hdr of matched){
+    const depth = tip.height - hdr.height + 1;
+    if (depth < minDepth) throw new Error(`insufficient burial depth ${depth} < ${minDepth}`);
   }
   if (seen && staged) for (const [k, v] of staged) seen.set(k, v);  // commit staged freshness
   return env;
 }
 
 return { parseBump, bumpRoot, parseBeef, verifyHeader, verifyL3,
-         targetFromBits, FLAG_DUPLICATE, FLAG_CLIENT_TXID };
+         targetFromBits, decodeCompact, blockWork, createHeaderStore,
+         MAINNET_POW_LIMIT, MAINNET_GENESIS_HASH,
+         FLAG_DUPLICATE, FLAG_CLIENT_TXID };
 })();
 if (typeof module !== "undefined") module.exports = SVSPV;

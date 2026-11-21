@@ -1,5 +1,9 @@
 """Tests for svcode.spv — BMP-0003 L3, replaying the live mainnet proof vector
-(poc/vectors/l3_live.json) offline."""
+(poc/vectors/l3_live.json) offline against a BMP-0004 trusted header store.
+
+Store fixture: PoC default trust profile (§6) — anchored at the subject
+header's recorded height (969795). The parent header shares that block, so
+add() is a duplicate no-op (§4.2 step 2)."""
 from __future__ import annotations
 
 import json
@@ -17,11 +21,26 @@ BEEF = bytes.fromhex(L3["beef_hex"])
 HEADERS = [bytes.fromhex(L3["subject_block"]["header_hex"]),
            bytes.fromhex(L3["parent_block"]["header_hex"])]
 AUTH = L3["authority_pubkey"]
-TIP = L3["tip_height_at_fetch"]
+TIP = L3["tip_height_at_fetch"]          # provenance metadata only (§5.1)
+SUBJ_H = L3["subject_block"]["height"]
+
+GENESIS = bytes.fromhex(
+    "0100000000000000000000000000000000000000000000000000000000000000"
+    "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa"
+    "4b1e5e4a29ab5f49ffff001d1dac2b7c")
+
+
+def make_store() -> spv.HeaderStore:
+    store = spv.HeaderStore([(HEADERS[0], SUBJ_H)])
+    store.add(HEADERS[1])                # same block ⇒ duplicate no-op
+    return store
+
+
+STORE = make_store()
 
 
 def test_live_vector_passes():
-    env = spv.verify_l3(BEEF, AUTH, HEADERS, seen={}, tip_height=TIP, min_depth=1)
+    env = spv.verify_l3(BEEF, AUTH, STORE, seen={}, min_depth=1)
     assert env.payload.decode() == L3["expected_payload"]
 
 
@@ -44,43 +63,50 @@ def test_corrupt_bump_rejected():
     beef = bytearray(BEEF)
     beef[60] ^= 0xFF  # inside first BUMP's data
     with pytest.raises(ValueError):
-        spv.verify_l3(bytes(beef), AUTH, HEADERS, seen={}, tip_height=TIP)
+        spv.verify_l3(bytes(beef), AUTH, make_store(), seen={})
 
 
 def test_corrupt_header_rejected():
+    # BMP-0004 §7: the corrupt header now fails at store.add() (consensus
+    # PoW gate, §3.2) — a rejected add leaves store state unchanged (§4.6.6).
     bad = bytearray(HEADERS[0]); bad[10] ^= 0xFF
+    store = make_store()
+    tip = store.best_tip()
+    assert tip is not None
+    before = (len(store), tip["hash"])
     with pytest.raises(ValueError, match="proof-of-work"):
-        spv.verify_l3(BEEF, AUTH, [bytes(bad), HEADERS[1]], seen={}, tip_height=TIP)
+        store.add(bytes(bad))
+    tip2 = store.best_tip()
+    assert tip2 is not None
+    assert (len(store), tip2["hash"]) == before
 
 
 def test_missing_header_rejected():
-    # A valid header from a DIFFERENT block (genesis) does not contain the
-    # subject's merkle root, so the subject's inclusion lookup must fail.
+    # A genesis-anchored store (height 0, genesis rule §3.3) does not contain
+    # the subject's merkle root, so the subject's inclusion lookup must fail.
     # The live vector's parent and subject share block 969795 (one header
     # proves both), so an unrelated block header isolates the missing-root case.
-    genesis = bytes.fromhex(
-        "0100000000000000000000000000000000000000000000000000000000000000"
-        "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa"
-        "4b1e5e4a29ab5f49ffff001d1dac2b7c")
-    spv.verify_header(genesis)  # sanity: a real PoW header
+    spv.verify_header(GENESIS)  # sanity: a real PoW header
+    store = spv.HeaderStore([(GENESIS, 0)])
     with pytest.raises(ValueError, match="merkle root not in header store"):
-        spv.verify_l3(BEEF, AUTH, [genesis], seen={}, tip_height=TIP)
+        spv.verify_l3(BEEF, AUTH, store, seen={})
 
 
 def test_wrong_authority_rejected():
     with pytest.raises(ValueError, match="envelope signature invalid"):
-        spv.verify_l3(BEEF, pubkey_hex(generate_key()), HEADERS, seen={}, tip_height=TIP)
+        spv.verify_l3(BEEF, pubkey_hex(generate_key()), make_store(), seen={})
 
 
 def test_depth_requirement_enforced():
+    # Store tip is 969795 (not the caller-asserted fetch tip): depth 1 can
+    # never satisfy TIP + 10 (§5.2.6 — no depth-inflation footgun).
     with pytest.raises(ValueError, match="insufficient burial depth"):
-        spv.verify_l3(BEEF, AUTH, HEADERS, seen={},
-                      tip_height=TIP, min_depth=TIP + 10)
+        spv.verify_l3(BEEF, AUTH, make_store(), seen={}, min_depth=TIP + 10)
 
 
 def test_freshness_applies_at_l3():
     seen = {}
-    spv.verify_l3(BEEF, AUTH, HEADERS, seen=seen, tip_height=TIP)
+    spv.verify_l3(BEEF, AUTH, make_store(), seen=seen)
     # a different command reusing the same parent outpoint must be rejected
     # (the live vector's subject already consumed it)
     from svcode import anchor
