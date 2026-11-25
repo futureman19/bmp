@@ -555,6 +555,19 @@ def test_l3_forged_blockheight_depth():
         spv.verify_l3(forged, AUTH, store, seen={}, min_depth=2)
 
 
+def test_l3_forged_blockheight_full_fixture_store():
+    # R4 hardening: the same forged BUMP under the §6 full-fixture trust
+    # profile (anchor 969496 + 299 real headers). Store-derived depth stays
+    # 1; the old BUMP-height math would have claimed depth 969796.
+    store = spv.HeaderStore([(HDRS[0], START_H)])
+    assert store.add_many(HDRS[1:]) == 299
+    forged = forge_low_blockheight(BEEF)
+    env = spv.verify_l3(forged, AUTH, store, seen={}, min_depth=1)
+    assert env.payload.decode() == L3["expected_payload"]
+    with pytest.raises(ValueError, match="insufficient burial depth"):
+        spv.verify_l3(forged, AUTH, store, seen={}, min_depth=2)
+
+
 def test_l3_store_derived_depth_extension():
     # Positive control: a trivial-limit child on top of the real subject
     # header makes depth 2 satisfiable from STORE-assigned heights.

@@ -335,6 +335,14 @@ eq('L3 forged blockHeight @min_depth=1: payload unchanged', dec(rf.payload), REF
 eq('L3 forged blockHeight @min_depth=2: depth error',
    errMsg(() => SVSPV.verifyL3(forged, AUTH, pocStore, new Map(), REF.l3.forged_min_depth)),
    REF.l3.forged_error);
+// R4 hardening: the same forged BUMP under the full 300-header fixture
+// store (§6 full-fixture trust profile) — depth stays store-derived.
+let rff = null;
+try { rff = SVSPV.verifyL3(forged, AUTH, fxStore, new Map(), 1); } catch (e) { rff = { error: e.message }; }
+eq('L3 forged blockHeight via full fixture store @min_depth=1: payload unchanged', dec(rff.payload), REF.l3.expected_payload);
+eq('L3 forged blockHeight via full fixture store @min_depth=2: depth error',
+   errMsg(() => SVSPV.verifyL3(forged, AUTH, fxStore, new Map(), REF.l3.forged_min_depth)),
+   REF.l3.forged_error);
 // §5.1: raw arrays are a TypeError, never a silent fallback. The message
 // wording is language-specific (verify_l3/HeaderStore vs verifyL3/header
 // store); the pinned invariant is the §5.1 marker + the no-fallback clause,
