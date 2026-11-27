@@ -187,8 +187,8 @@ def test_competing_first_and_fork_rechecks(tmp_path):
                 s._db.execute(sql)
 
 
-@pytest.mark.parametrize('offset', [0,1])
-def test_one_block_real_agreement_and_subject_only_loss(tmp_path,offset):
+@pytest.fixture
+def one_block(tmp_path):
     # Policy lives in signed terms. Re-sign the actual chain/payment and mine a subject proof.
     ad,req,o,a,k = CHAIN
     o = changed(o,1,lambda p:p['body']['terms'].update(confirmationPolicy='one-block'))
@@ -204,6 +204,34 @@ def test_one_block_real_agreement_and_subject_only_loss(tmp_path,offset):
     full = atomic(raw,[pp,path],entries+[(raw,1)]); args = opts(); args['headers'] = h
     with Store(tmp_path/'db') as s:
         ready(s,chain); s.assign(*key,raw=raw,parents=ps,vout=0,payment_id=parse(raw)['txid']+'.0',now=NOW)
+    return key, args, partial, full
+
+
+@pytest.mark.parametrize('arrival,recheck,status', [(-1,0,'CURRENT'), (0,1,'LATE'), (1,0,'LATE')])
+def test_one_block_unavailable_preserves_completion(tmp_path, one_block, arrival, recheck, status):
+    key, args, _, full = one_block
+    with Store(tmp_path/'db') as s:
+        first = s.authorize_delivery(key[0], beef=full, **(args | dict(now=BY+arrival, conflict_status='unavailable')))
+        assert not first.authorized and s.get(key[0]).paid_at is None
+        assert first.record is not None and first.record.first_arrival == BY+arrival
+        assert first.depth == first.record.first_depth == 1
+        assert [v.role for v in first.record.first_support] == ['parent','parent','subject']
+    with Store(tmp_path/'db') as s:
+        assert s.evidence_history(key[0]) == [first]
+        checked = s.authorize_delivery(key[0], **(args | dict(now=BY+recheck)))
+        assert checked.record == first.record and checked.status == status
+        assert checked.authorized == (status == 'CURRENT')
+        assert s.get(key[0]).paid_at == (BY+recheck if checked.authorized else None)
+        if not checked.authorized:
+            assert s.authorize_delivery(key[0], **(args | dict(now=BY-1))).status == 'LATE'
+            assert s.get(key[0]).paid_at is None
+
+
+@pytest.mark.parametrize('offset', [0,1])
+def test_one_block_real_agreement_and_subject_only_loss(tmp_path,one_block,offset):
+    key, args, partial, full = one_block
+    h = args['headers']
+    with Store(tmp_path/'db') as s:
         assert s.submit_evidence(key[0],B['original'],**args).status == 'INVALID'
         assert s.submit_evidence(key[0],partial,**args).record is None
         args['now'] += offset

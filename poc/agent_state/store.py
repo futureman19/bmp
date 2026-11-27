@@ -224,12 +224,18 @@ class Store:
                               txid=txid, payment_id=row.payment_id, vout=int(vout), amount_sats=agreement.price,
                               policy=terms['confirmationPolicy'], conflict_status=conflict_status, arrival=now,
                               pay_by=terms['payBy'], prior=prior, assigned_raw=row.raw)
-            if result.status in ('CURRENT', 'LATE') and conflict_status == 'unavailable':
-                result = Result('PENDING', 'conflict-policy-unavailable', prior)
+            if result.status == 'CURRENT' and conflict_status == 'unavailable':
+                result = Result('PENDING', 'conflict-policy-unavailable', result.record, result.depth)
             paid_at = row.paid_at
             if paid_at is None and result.status == 'CURRENT':
-                require(now <= terms['payBy'] and result.record.first_arrival == now, 'late')
-                paid_at = now
+                deadline = terms['payBy']
+                # A clock rollback cannot reopen an already observed expiry.
+                if now > deadline or self._db.execute(
+                        'SELECT 1 FROM evidence_history WHERE thread=? AND checked_at>? LIMIT 1',
+                        (thread, deadline)).fetchone():
+                    result = Result('LATE', 'qualification-expired', result.record, result.depth)
+                else:
+                    paid_at = now
             revision = row.evidence_revision + 1
             values = (thread, revision, row.payment_id, now, beef, tip['hash'] if tip else None,
                       tip['height'] if tip else None, conflict_status, result.status, result.reason, result.depth,
