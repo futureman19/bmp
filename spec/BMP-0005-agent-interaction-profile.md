@@ -5,7 +5,7 @@
 | **Number** | BMP-0005 |
 | **Title** | Agent Interaction Profile — Authenticated Paid Tasks |
 | **Status** | **Draft — unimplemented; no interoperability or conformance claim** |
-| **Revision** | R3 — post-review hardening |
+| **Revision** | R3.1 — canonical payment-script hardening |
 | **Category** | Protocol Specification (Bitcoin Machine Protocol) |
 | **Created** | 2026-11-26 |
 | **Requires** | BMP-0000; BRC-62, BRC-74, BRC-95 for evidence; Locus Protocol v3 for identity anchors |
@@ -471,7 +471,7 @@ The requester MUST verify the provider signature, thread/roles, stored pair, and
 The payment transaction MUST commit to the signed acceptance, not merely pay a reusable address. It MUST have:
 
 1. `nLockTime = 0` and `nSequence = 0xffffffff` on every input. Non-final or time-locked payment forms are outside this profile.
-2. Only P2PKH inputs whose evidenced prevouts pay the **requester identity address**. Every input signature MUST use exactly `SIGHASH_ALL | FORKID` (`0x41`), committing to all outputs, including the acceptance commitment. Sponsored, third-party, and mixed-payer inputs are excluded.
+2. Only P2PKH inputs whose evidenced prevouts pay the **requester identity address**. Every input signature MUST use exactly `SIGHASH_ALL | FORKID` (`0x41`), committing to all outputs, including the acceptance commitment. Each signature MUST use strict DER and low-s (`s <= n/2`). The unlocking script MUST be exactly two canonical direct pushes: `<signature || 0x41>` followed by the 33-byte compressed requester pubkey; `OP_PUSHDATA1/2/4`, extra operations, and alternate encodings are invalid. Sponsored, third-party, and mixed-payer inputs are excluded.
 3. The payee output selected by `vout`: exactly `priceSats` by plain mainnet P2PKH to the offer's `paymentAddress`.
 4. Exactly one zero-satoshi commitment output:
 
@@ -808,7 +808,7 @@ This document remains **Draft** until all of the following exist:
    - replay, sender/thread-scoped `messageId` conflicts, far-future expiry, stale/future timestamps, out-of-order actions, wrong roles, and cross-thread references;
    - payment attempted without/with wrong ACCEPT_ACK, distinct ACCEPT bytes for one offer or thread, provider acknowledgment before durable acceptance, and exact ACCEPT retry returning the stored acknowledgment;
    - mismatched provider/requester advertisements, exceeded task/delivery limits, wrong return endpoint, and unsafe endpoint/redirect destinations;
-   - the same payment outpoint presented for two offers, missing/wrong `acceptHash`, third-party inputs, non-`0x41` signatures, additional outputs, multiple commitments, wrong payment txid/output/amount/payee, unmined ancestors, non-final locktime/sequence, invalid Merkle evidence, and insufficient confirmation depth;
+   - the same payment outpoint presented for two offers, missing/wrong `acceptHash`, third-party inputs, non-`0x41`/high-s/non-strict-DER signatures, non-minimal input pushes, additional outputs, multiple commitments, wrong payment txid/output/amount/payee, unmined ancestors, non-final locktime/sequence, invalid Merkle evidence, and insufficient confirmation depth;
    - duplicate/conflicting payment notices, same-payment evidence refresh versus distinct-payment conflict, cross-offer outpoint reuse, and wrong `paymentId` in delivery or receipt;
    - acceptance after `acceptBefore`, payment evidence after `payBy`, backdated/late delivery, self-rejection, wrong-party rejection, and terminal rejection attempted after acceptance/payment/delivery;
    - identity/payment best-chain loss and restoration, missing peer evidence versus locally unavailable headers, transport timeout, ambiguous broadcast, and killfile/policy refusal.
