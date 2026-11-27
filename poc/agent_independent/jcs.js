@@ -177,6 +177,11 @@ function parseNumber(st) {
 
 // --- RFC 8785 serialization ---
 function jcsString(s) {
+  // Lone surrogates have no canonical UTF-8 encoding; reject instead of
+  // silently substituting U+FFFD (BMP-0005 §5.4 canonical JSON).
+  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s)) {
+    throw new JsonError('lone surrogate');
+  }
   let out = '"';
   for (const ch of s) {
     const code = ch.codePointAt(0);
@@ -193,20 +198,23 @@ function jcsString(s) {
   return out + '"';
 }
 
-function jcsSerialize(value) {
+function jcsSerialize(value, depth = 0) {
+  // Same nesting bound as the strict parser (§5.4: depth <= 64), so the
+  // encoder can never emit a payload the decoder must reject.
+  if (depth > MAX_DEPTH) throw new JsonError('nesting too deep');
   if (value === null) return 'null';
   const t = typeof value;
   if (t === 'boolean') return value ? 'true' : 'false';
   if (t === 'number') {
-    if (!Number.isSafeInteger(value) || value < 0) throw new JsonError('non-canonical number');
+    if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) throw new JsonError('non-canonical number');
     return String(value);
   }
   if (t === 'string') return jcsString(value);
-  if (Array.isArray(value)) return '[' + value.map(jcsSerialize).join(',') + ']';
+  if (Array.isArray(value)) return '[' + value.map(v => jcsSerialize(v, depth + 1)).join(',') + ']';
   if (t === 'object') {
     // JCS: sort keys by UTF-16 code units (JS default string sort does this).
     const keys = Object.keys(value).sort();
-    return '{' + keys.map(k => jcsString(k) + ':' + jcsSerialize(value[k])).join(',') + '}';
+    return '{' + keys.map(k => jcsString(k) + ':' + jcsSerialize(value[k], depth + 1)).join(',') + '}';
   }
   throw new JsonError('unserializable value');
 }

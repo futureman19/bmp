@@ -50,7 +50,7 @@ const RE_HEX32 = /^[0-9a-f]{32}$/;
 const RE_HEX66 = /^[0-9a-f]{66}$/;
 const RE_PIN = /^[0-9a-f]{64}\.(0|[1-9][0-9]*)$/;
 const RE_KIND = /^[a-z][a-z0-9._-]{0,63}$/;
-const RE_MIME = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/;
+const RE_MIME = /^[a-z0-9!#$%&'*+.^_`|~-]+\/[a-z0-9!#$%&'*+.^_`|~-]+$/;
 const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 function isHex64(s) { return typeof s === 'string' && RE_HEX64.test(s); }
@@ -87,13 +87,19 @@ function checkUintRange(v, lo, hi, path) {
 function b58encode(buf) {
   let v = 0n;
   for (const b of buf) v = (v << 8n) | BigInt(b);
-  let out = '';
-  while (v > 0n) { out = B58[Number(v % 58n)] + out; v /= 58n; }
-  for (const b of buf) { if (b === 0) out = '1' + out; else break; }
-  return out || '1';
+  const chars = [];
+  while (v > 0n) { chars.push(B58[Number(v % 58n)]); v /= 58n; }
+  chars.reverse();
+  let zeros = 0;
+  for (const b of buf) { if (b === 0) zeros++; else break; }
+  return '1'.repeat(zeros) + chars.join('') || '1';
 }
 function b58decode(s) {
   if (typeof s !== 'string' || s.length === 0) return null;
+  // Resource bound: a mainnet P2PKH address encodes 25 bytes (<= 35 chars).
+  // Cap the string BEFORE any BigInt work so oversized attacker input cannot
+  // cause superlinear conversion cost.
+  if (s.length > 64) return null;
   let v = 0n;
   for (const ch of s) {
     const idx = B58.indexOf(ch);
@@ -101,9 +107,11 @@ function b58decode(s) {
     v = v * 58n + BigInt(idx);
   }
   const bytes = [];
-  while (v > 0n) { bytes.unshift(Number(v & 0xffn)); v >>= 8n; }
-  for (const ch of s) { if (ch === '1') bytes.unshift(0); else break; }
-  return Buffer.from(bytes);
+  while (v > 0n) { bytes.push(Number(v & 0xffn)); v >>= 8n; }
+  bytes.reverse();
+  let zeros = 0;
+  for (const ch of s) { if (ch === '1') zeros++; else break; }
+  return Buffer.concat([Buffer.alloc(zeros), Buffer.from(bytes)]);
 }
 function hash160(buf) {
   return crypto.createHash('ripemd160').update(secp.sha256(buf)).digest();
@@ -188,8 +196,8 @@ function validateBody(action, body, env, opts) {
       checkStr(body.endpoint, path + '.endpoint');
       let u;
       try { u = new URL(body.endpoint); } catch { fail('format', path + '.endpoint', 'bad URL'); }
-      if (u.protocol !== 'https:' || u.username || u.password || u.hash || !u.hostname) {
-        fail('format', path + '.endpoint', 'must be absolute https without credentials/fragment');
+      if (u.protocol !== 'https:' || u.username || u.password || u.hash || body.endpoint.includes('#') || !u.hostname) {
+        fail('format', path + '.endpoint', 'must be absolute https without credentials/fragment delimiter');
       }
       if (!Array.isArray(body.services) || body.services.length > 16) fail('number', path + '.services', '0..16 services');
       const kinds = new Set();
@@ -220,7 +228,7 @@ function validateBody(action, body, env, opts) {
       const tl = utf8Len(body.task);
       if (tl < 1 || tl > 4096) fail('text', path + '.task', 'task 1..4096 bytes');
       checkUintRange(body.maxPriceSats, 1, Number.MAX_SAFE_INTEGER, path + '.maxPriceSats');
-      checkUintRange(body.deliverBy, 0, 0xffffffff, path + '.deliverBy');
+      checkUintRange(body.deliverBy, 1, Number.MAX_SAFE_INTEGER, path + '.deliverBy');
       if (body.deliverBy <= env.expiresAt) fail('window', path + '.deliverBy', 'deliverBy must exceed Expires_At');
       if (body.deliverBy > env.createdAt + 30 * 86400) fail('window', path + '.deliverBy', 'deliverBy beyond 30 days');
       checkMime(body.deliveryMime, path + '.deliveryMime');
@@ -229,6 +237,11 @@ function validateBody(action, body, env, opts) {
         const provAd = ctx.findBySha(body.providerAdvertisementHash);
         if (!provAd || provAd.action !== 'ADVERTISE') fail('missing', path + '.providerAdvertisementHash', 'provider advertisement not in context');
         if (!principalEq(provAd.from, env.to)) fail('role', path + '.providerAdvertisementHash', 'provider ad sender != recipient');
+        // §10.2: the selected provider advertisement must be unexpired at the
+        // receiver's time when a receiver clock is supplied.
+        if (typeof opts.now === 'number' && provAd.expiresAt < opts.now) {
+          fail('expired', path + '.providerAdvertisementHash', 'provider advertisement expired at receiver time');
+        }
         const entry = provAd.body.services.find(e => e.kind === body.service);
         if (!entry) fail('reference-action', path + '.service', 'service not advertised');
         if (tl > entry.maxTaskBytes) fail('text', path + '.task', 'task exceeds advertised maxTaskBytes');
@@ -249,7 +262,7 @@ function validateBody(action, body, env, opts) {
       checkUintRange(t.priceSats, 1, Number.MAX_SAFE_INTEGER, tp + '.priceSats');
       checkStr(t.paymentAddress, tp + '.paymentAddress');
       if (t.paymentAddress !== env.from.address) fail('address', tp + '.paymentAddress', 'must be provider address');
-      for (const f of ['acceptBefore', 'payBy', 'deliverBy']) checkUintRange(t[f], 0, 0xffffffff, tp + '.' + f);
+      for (const f of ['acceptBefore', 'payBy', 'deliverBy']) checkUintRange(t[f], 1, Number.MAX_SAFE_INTEGER, tp + '.' + f);
       if (!(env.createdAt < t.acceptBefore && t.acceptBefore <= t.payBy && t.payBy < t.deliverBy)) {
         fail('window', tp, 'offer chronology violated');
       }
@@ -314,6 +327,16 @@ function validateBody(action, body, env, opts) {
         if (env.threadId !== offer.threadId) fail('thread', '$.threadId', 'payment thread mismatch');
         if (!principalEq(env.from, offer.to) || !principalEq(env.to, offer.from)) fail('role', '$.from', 'payment roles reversed');
         if (body.amountSats !== offer.body.terms.priceSats) fail('number', path + '.amountSats', 'amount != offer price');
+        // §9 rule 4: PAYMENT requires the stored {offerHash, acceptHash} pair —
+        // a matching valid ACCEPT plus the provider's ACCEPT_ACK for it.
+        const accepts = ctx.findByAction('ACCEPT').filter(a =>
+          a.body.offerHash === body.offerHash && a.threadId === env.threadId &&
+          principalEq(a.from, env.from) && principalEq(a.to, env.to));
+        if (accepts.length === 0) fail('reference-action', path + '.offerHash', 'no matching ACCEPT for offer');
+        const acknowledged = accepts.some(a => ctx.findByAction('ACCEPT_ACK').some(k =>
+          k.body.offerHash === body.offerHash && k.body.acceptHash === a.sha256 &&
+          k.threadId === env.threadId && principalEq(k.from, env.to) && principalEq(k.to, env.from)));
+        if (!acknowledged) fail('reference-action', path + '.offerHash', 'no provider ACCEPT_ACK for the stored pair');
       }
       break;
     }
@@ -346,11 +369,22 @@ function validateBody(action, body, env, opts) {
       checkPin(body.paymentId, path + '.paymentId');
       if (body.outcome !== 'accepted') fail('format', path + '.outcome', 'outcome must be accepted');
       if (ctx) {
+        // §10.7: the receipt binds offer, delivery and payment together.
+        const offer = ctx.findBySha(body.offerHash);
+        if (!offer || offer.action !== 'OFFER') fail('reference-action', path + '.offerHash', 'offer not in context');
+        if (env.threadId !== offer.threadId) fail('thread', '$.threadId', 'receipt offer thread mismatch');
+        if (!principalEq(env.from, offer.to) || !principalEq(env.to, offer.from)) fail('role', '$.from', 'receipt offer roles reversed');
         const del = ctx.findBySha(body.deliveryHash);
         if (!del || del.action !== 'DELIVER') fail('reference-action', path + '.deliveryHash', 'delivery not in context');
+        if (del.body.offerHash !== body.offerHash) fail('reference-action', path + '.offerHash', 'delivery belongs to a different offer');
         if (del.body.paymentId !== body.paymentId) fail('reference-action', path + '.paymentId', 'receipt paymentId != delivery');
         if (env.threadId !== del.threadId) fail('thread', '$.threadId', 'receipt thread mismatch');
         if (!principalEq(env.from, del.to) || !principalEq(env.to, del.from)) fail('role', '$.from', 'receipt roles reversed');
+        const pay = ctx.findByPaymentId(body.paymentId);
+        if (!pay || pay.action !== 'PAYMENT' || pay.body.offerHash !== body.offerHash ||
+            pay.threadId !== env.threadId || !principalEq(pay.from, env.from) || !principalEq(pay.to, env.to)) {
+          fail('reference-action', path + '.paymentId', 'payment not bound to this offer/thread');
+        }
       }
       break;
     }
@@ -363,6 +397,9 @@ function validateBody(action, body, env, opts) {
       if (body.proofKind === 'identity') {
         requireKeys(body, ['agentPin'], path);
         checkPin(body.agentPin, path + '.agentPin');
+        // §10.8: local binding to the sender principal holds even without
+        // transcript context (null-context decode included).
+        if (body.agentPin !== env.from.agentPin) fail('role', path + '.agentPin', 'agentPin != sender principal');
       } else if ('agentPin' in body) {
         fail('unknown', path + '.agentPin', 'agentPin only for identity proof');
       }
@@ -386,7 +423,7 @@ function validateBody(action, body, env, opts) {
       if (!REJECT_CODES.includes(body.code)) fail('format', path + '.code', 'bad reject code');
       if ('reason' in body) {
         checkStr(body.reason, path + '.reason');
-        if (/[\n\r]/.test(body.reason) || utf8Len(body.reason) > 280) fail('text', path + '.reason', 'reason single-line <=280 bytes');
+        if (/[\n\r\u000b\u000c\u0085\u2028\u2029]/.test(body.reason) || utf8Len(body.reason) > 280) fail('text', path + '.reason', 'reason single-line <=280 bytes');
       }
       if (ctx) {
         const subj = ctx.findBySha(body.subjectHash);
@@ -417,6 +454,7 @@ function makeContext(decodedList) {
     findBySha: h => bySha.get(h) || null,
     findByMsg: m => byMsg.get(m) || null,
     findByPaymentId: pid => payments.find(p => (p.body.txid + '.' + p.body.vout) === pid) || null,
+    findByAction: a => decodedList.filter(d => d.action === a),
   };
 }
 
@@ -461,7 +499,7 @@ function decodeEnvelope(buf, opts = {}) {
   const msgIdBytes = secp.hexToBytes(payload.messageId);
   if (!nonce.equals(msgIdBytes.subarray(0, 4))) fail('nonce', '$.nonce', 'nonce != first 4 bytes of messageId');
 
-  validateIdentity(payload.from, '$.from', action === 'ADVERTISE' ? { requireEvidence: true } : {});
+  validateIdentity(payload.from, '$.from', action === 'ADVERTISE' ? { requireEvidence: true } : action === 'REQUEST' ? { forbidEvidence: true } : {});
   validateIdentity(payload.to, '$.to', action === 'ADVERTISE' ? { forbidEvidence: true } : {});
 
   // target binding (§5.5)
@@ -499,14 +537,25 @@ function decodeEnvelope(buf, opts = {}) {
   };
 
   // freshness (§8.2)
+  // Structural freshness is unconditional (§8.2): only future-skew and
+  // arrival-after-expiry depend on a supplied receiver clock.
+  if (env.expiresAt <= env.createdAt) fail('window', '$.expires', 'Expires_At <= Created_At');
+  if (env.expiresAt - env.createdAt > WINDOWS[action]) fail('window', '$.expires', 'validity window exceeded');
   if (typeof opts.now === 'number') {
-    if (expiresAt <= createdAt) fail('window', '$.expires', 'Expires_At must exceed Created_At');
-    if (expiresAt - createdAt > WINDOWS[action]) fail('window', '$.expires', 'expiry window exceeded');
-    if (createdAt > opts.now + MAX_FUTURE_SKEW) fail('future', '$.created', 'Created_At too far in future');
-    if (opts.now > expiresAt) fail('expired', '$.expires', 'message arrived after Expires_At');
+    if (env.createdAt > opts.now + 300) fail('future', '$.createdAt', 'Created_At > now + 300s');
+    if (opts.now > env.expiresAt) fail('expired', '$.expires', 'now > Expires_At');
   }
 
   validateBody(action, payload.body, env, { now: opts.now, context: opts.context || null, depth });
+
+  // §8.2: later task envelopes expire no later than the originating REQUEST's
+  // deliverBy + 86400 (enforced when transcript context is supplied).
+  if (opts.context && action !== 'ADVERTISE' && action !== 'REQUEST') {
+    const req = opts.context.findByMsg(env.threadId);
+    if (req && req.action === 'REQUEST' && env.expiresAt > req.body.deliverBy + 86400) {
+      fail('window', '$.expiresAt', 'task expiry beyond request deliverBy + 86400');
+    }
+  }
   return env;
 }
 
@@ -518,10 +567,18 @@ function encodeEnvelope(fx) {
   if (!actionCode) fail('action', '$.action', 'unknown action');
   checkUintRange(fx.createdAt, 0, 0xffffffff, '$.created');
   checkUintRange(fx.expiresAt, 0, 0xffffffff, '$.expires');
+  // Structural freshness applies at encode time too (§8.2).
+  if (fx.expiresAt <= fx.createdAt) fail('window', '$.expiresAt', 'expires must be after creation');
+  if (fx.expiresAt - fx.createdAt > WINDOWS[fx.action]) fail('window', '$.expiresAt', 'validity window exceeded');
   checkHex32(fx.messageId, '$.messageId');
   checkHex32(fx.threadId, '$.threadId');
-  validateIdentity(fx.from, '$.from', action === 'ADVERTISE' ? { requireEvidence: true } : {});
-  validateIdentity(fx.to, '$.to', action === 'ADVERTISE' ? { forbidEvidence: true } : {});
+  validateIdentity(fx.from, '$.from', fx.action === 'ADVERTISE' ? { requireEvidence: true } : (fx.action === 'REQUEST' ? { forbidEvidence: true } : {}));
+  validateIdentity(fx.to, '$.to', fx.action === 'ADVERTISE' ? { forbidEvidence: true } : {});
+  // §5.1: the signing key must derive the declared sender pubkey.
+  let derivedPub;
+  try { derivedPub = secp.derivePubkey(fx.privateKey); }
+  catch { fail('signature', '$.privateKey', 'invalid private key'); }
+  if (derivedPub !== fx.from.pubkey) fail('signature', '$.from.pubkey', 'private key does not derive from.pubkey');
   if (action === 'ADVERTISE') {
     if (!principalEq(fx.from, fx.to)) fail('role', '$.to', 'ADVERTISE self-addressed');
   } else if (fx.from.agentPin === fx.to.agentPin || fx.from.pubkey === fx.to.pubkey) {
@@ -531,7 +588,16 @@ function encodeEnvelope(fx) {
   validateBody(action, fx.body, envShape, { now: undefined, context: null, depth: 0 });
 
   const payload = { profile: PROFILE, threadId: fx.threadId, messageId: fx.messageId, from: fx.from, to: fx.to, body: fx.body };
-  const payloadBytes = jcs.canonicalBytes(payload);
+  let payloadBytes;
+  try {
+    payloadBytes = jcs.canonicalBytes(payload);
+  } catch (e) {
+    if (e instanceof jcs.JsonError) {
+      const code = /number|integer/.test(e.message) ? 'number' : 'noncanonical';
+      fail(code, '$.payload', e.message);
+    }
+    throw e;
+  }
   if (payloadBytes.length > 0xffff) fail('length', '$', 'payload exceeds 65535 bytes');
 
   const header = Buffer.alloc(21);
@@ -546,6 +612,9 @@ function encodeEnvelope(fx) {
   const signedBytes = Buffer.concat([header, payloadBytes]);
   const sig = secp.signDeterministic(fx.privateKey, signedBytes);
   const bytes = Buffer.concat([header, sig, payloadBytes]);
+  // Encoder/decoder consistency: the emitted envelope must pass the same
+  // structural, body and signature rules as decode (null context, no clock).
+  decodeEnvelope(bytes, { context: null });
   return { bytes, sha256: secp.sha256(bytes).toString('hex'), payloadLen: payloadBytes.length, signatureHex: sig.toString('hex') };
 }
 
@@ -553,4 +622,5 @@ module.exports = {
   VERSION, PROFILE, ACTIONS, WINDOWS, HEADER_LEN,
   WireError, decodeEnvelope, encodeEnvelope, makeContext,
   targetId, deriveAddress, checkBase64, checkPin, checkHex64,
+  b58encode, b58decode,
 };

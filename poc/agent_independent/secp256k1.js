@@ -145,8 +145,10 @@ function rfc6979Init(d, h1) {
 }
 
 // Deterministic low-s ECDSA over SHA-256(msg). Returns 64-byte r||s Buffer.
-// The message passed here is the envelope signing digest (itself SHA-256 of
-// signed_bytes), so the ECDSA input is hashed once more, per standard ECDSA.
+// msgBuf is the raw signed_bytes (header || payload); it is hashed exactly
+// once with SHA-256 here, and that single digest feeds both RFC 6979 and ECDSA.
+// WARNING: BigInt arithmetic is variable-time and secrets are not zeroized.
+// Test/PoC use only — never sign with keys that control real funds.
 function signDeterministic(privHex, msgBuf) {
   const d = BigInt('0x' + privHex);
   checkPrivateKey(d);

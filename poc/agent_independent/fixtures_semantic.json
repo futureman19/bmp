@@ -1,0 +1,288 @@
+{
+  "requester-ad": {
+    "action": "ADVERTISE",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "1ab39b51000cfca1d83682a432363988",
+    "threadId": "1ab39b51000cfca1d83682a432363988",
+    "from": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "identityEvidence": "V0lSRS1PTkxZ",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "to": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "body": {
+      "endpoint": "https://a.example/bmp-agent/1",
+      "services": []
+    }
+  },
+  "provider-ad": {
+    "action": "ADVERTISE",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "9c62c1a446dff41fda0027be2a68f7cf",
+    "threadId": "9c62c1a446dff41fda0027be2a68f7cf",
+    "from": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "identityEvidence": "V0lSRS1PTkxZ",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "to": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "body": {
+      "endpoint": "https://b.example/bmp-agent/1",
+      "services": [
+        {
+          "description": "Short summary",
+          "kind": "research.summary",
+          "maxDeliveryBytes": 16384,
+          "maxTaskBytes": 4096
+        }
+      ]
+    }
+  },
+  "request": {
+    "action": "REQUEST",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "1f58b9145b24d108d7ac38887338b3ea",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "to": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "body": {
+      "deliverBy": 1795603600,
+      "deliveryMime": "text/markdown",
+      "maxDeliveryBytes": 16384,
+      "maxPriceSats": 5000,
+      "providerAdvertisementHash": "0ef5f4ab825abb5f2757bab03c25e953396603cc28ea0269059b49625f627758",
+      "requesterAdvertisement": "AmBgRVmgAGsGroBrBrDYGrObUQKENYxsAuv9I7JMOPlRY388ccCDj09LqEUVkjbM5Jkn0ItPR0g59Ab/rKn9EiN7IsdfKx0BVH+Bd4r6nWAd80nvKnsiYm9keSI6eyJlbmRwb2ludCI6Imh0dHBzOi8vYS5leGFtcGxlL2JtcC1hZ2VudC8xIiwic2VydmljZXMiOltdfSwiZnJvbSI6eyJhZGRyZXNzIjoiMUJnR1o5dGNONHJtOUtCekRuN0twclF6ODdTWjI2U0FNSCIsImFnZW50UGluIjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMS4wIiwiaWRlbnRpdHlFdmlkZW5jZSI6IlYwbFNSUzFQVGt4WiIsInB1YmtleSI6IjAyNzliZTY2N2VmOWRjYmJhYzU1YTA2Mjk1Y2U4NzBiMDcwMjliZmNkYjJkY2UyOGQ5NTlmMjgxNWIxNmY4MTc5OCJ9LCJtZXNzYWdlSWQiOiIxYWIzOWI1MTAwMGNmY2ExZDgzNjgyYTQzMjM2Mzk4OCIsInByb2ZpbGUiOiJibXAtYWdlbnQvMSIsInRocmVhZElkIjoiMWFiMzliNTEwMDBjZmNhMWQ4MzY4MmE0MzIzNjM5ODgiLCJ0byI6eyJhZGRyZXNzIjoiMUJnR1o5dGNONHJtOUtCekRuN0twclF6ODdTWjI2U0FNSCIsImFnZW50UGluIjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMS4wIiwicHVia2V5IjoiMDI3OWJlNjY3ZWY5ZGNiYmFjNTVhMDYyOTVjZTg3MGIwNzAyOWJmY2RiMmRjZTI4ZDk1OWYyODE1YjE2ZjgxNzk4In19",
+      "requesterAdvertisementHash": "e7e670db173bb10edb674cbe226ac8c1505137f9b54c2ae5047e3aca7e18fe36",
+      "service": "research.summary",
+      "task": "Summarize the supplied sources."
+    }
+  },
+  "offer": {
+    "action": "OFFER",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "988180bf0c9328c9e8bd082755c64704",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "to": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "body": {
+      "terms": {
+        "acceptBefore": 1795600500,
+        "confirmationPolicy": "zero-conf",
+        "deliverBy": 1795603600,
+        "deliveryMime": "text/markdown",
+        "maxDeliveryBytes": 16384,
+        "payBy": 1795601000,
+        "paymentAddress": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+        "priceSats": 2500,
+        "requestHash": "c4b9a456c514d93bb2d60c37b207731f06842eb8d373886849f6ce75dc135820"
+      }
+    }
+  },
+  "accept": {
+    "action": "ACCEPT",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "c125d0397b605657bc89340953f5f289",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "to": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "body": {
+      "offerHash": "ecff1e278c4c5029abe5a0a06e66a1f9a2cd34110c7d39ec61a59b2280995c51"
+    }
+  },
+  "ack": {
+    "action": "ACCEPT_ACK",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "64a37929fb113e18daa6263a1fb1f90c",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "to": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "body": {
+      "acceptHash": "99e89fcdabe4c498924d0f9fc43e11bb6eaed98ef8670bbfa0a28690c03f89ed",
+      "offerHash": "ecff1e278c4c5029abe5a0a06e66a1f9a2cd34110c7d39ec61a59b2280995c51"
+    }
+  },
+  "payment": {
+    "action": "PAYMENT",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "040ffd5925d40e11c67b7238a7fc9957",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "to": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "body": {
+      "amountSats": 2500,
+      "offerHash": "ecff1e278c4c5029abe5a0a06e66a1f9a2cd34110c7d39ec61a59b2280995c51",
+      "txid": "4444444444444444444444444444444444444444444444444444444444444444",
+      "vout": 0
+    }
+  },
+  "deliver": {
+    "action": "DELIVER",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "fa2dcc238152c8737597858b6adb4e6e",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "to": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "body": {
+      "content": "# Summary\n\nCafé.",
+      "mime": "text/markdown",
+      "offerHash": "ecff1e278c4c5029abe5a0a06e66a1f9a2cd34110c7d39ec61a59b2280995c51",
+      "paymentId": "4444444444444444444444444444444444444444444444444444444444444444.0"
+    }
+  },
+  "receipt": {
+    "action": "RECEIPT",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "6f32860910ca0fb2a20c7fda143666b0",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "to": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "body": {
+      "deliveryHash": "202df6742a6cd50ae74a8a47245d3a39b6b51965978314fc80ea6024f24506a3",
+      "offerHash": "ecff1e278c4c5029abe5a0a06e66a1f9a2cd34110c7d39ec61a59b2280995c51",
+      "outcome": "accepted",
+      "paymentId": "4444444444444444444444444444444444444444444444444444444444444444.0"
+    }
+  },
+  "reject": {
+    "action": "REJECT",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "084e990a49ba65e622926853785e0ed0",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "to": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "body": {
+      "code": "payment-proof-required",
+      "reason": "Evidence missing.",
+      "subjectHash": "2c45ce15a1a5d5c0b007c6a0ec4155d40292000840ba3e757a395942b6ceeb66"
+    }
+  },
+  "proof-payment": {
+    "action": "PROOF",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "8fd749b2b34ec38bc144b92e52ef8522",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "to": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "body": {
+      "atomicBeef": "V0lSRS1PTkxZ",
+      "proofKind": "payment",
+      "subjectHash": "2c45ce15a1a5d5c0b007c6a0ec4155d40292000840ba3e757a395942b6ceeb66"
+    }
+  },
+  "proof-identity": {
+    "action": "PROOF",
+    "createdAt": 1795600000,
+    "expiresAt": 1795600600,
+    "messageId": "adc4a48533a5c18d994964a6e98f8b5c",
+    "threadId": "1f58b9145b24d108d7ac38887338b3ea",
+    "from": {
+      "address": "1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "pubkey": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    },
+    "to": {
+      "address": "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000001.0",
+      "pubkey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    },
+    "body": {
+      "agentPin": "0000000000000000000000000000000000000000000000000000000000000002.0",
+      "atomicBeef": "V0lSRS1PTkxZ",
+      "proofKind": "identity",
+      "subjectHash": "ecff1e278c4c5029abe5a0a06e66a1f9a2cd34110c7d39ec61a59b2280995c51"
+    }
+  }
+}

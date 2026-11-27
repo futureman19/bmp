@@ -1,13 +1,16 @@
-# BMP-0005 independent Node wire implementation (Q1)
+# BMP-0005 independent Node wire implementation (Q1 + Q1R corrections)
 
 A second, independent implementation of the BMP-0005 R3 agent-interaction
 wire format, written from the normative specification and the published
 golden vectors only. It exists to prove **byte-exact wire/schema parity**
-with the C1 reference vectors — nothing more.
+with the C1 reference vectors — nothing more. Q1R applies the corrections
+from two controller probes and two independent reviews (false accepts and
+evidence gaps found despite the original 165 assertions passing).
 
 ## Scope statement (read this first)
 
-This directory proves **wire parity only**. It does NOT prove or implement:
+This directory proves **wire parity only**, offline. It does NOT prove or
+implement:
 
 - SPV / BEEF / BUMP validation (`identityEvidence` and `atomicBeef` are
   treated as opaque, strictly-validated base64 blobs, never parsed),
@@ -16,30 +19,37 @@ This directory proves **wire parity only**. It does NOT prove or implement:
 - live interoperability with any other agent or service,
 - BMP-0005 "Stable" status.
 
-No network access, no keys beyond the published test private keys, no
-package dependencies (Node built-ins `crypto`, `fs`, `path`, `assert` only).
+No network access, no package dependencies (Node built-ins `crypto`, `fs`,
+`path`, `assert` only). Signing uses the two published test private keys
+plus one locally derived low-value test scalar (3) for a third-party probe;
+no real keys or funds are involved.
+
+**Non-production signing warning:** the secp256k1 signer uses variable-time
+BigInt arithmetic and does not zeroize secrets. It is a PoC/test signer
+only — never use it with keys that control real funds.
 
 ## Independence
 
-Sources used: `spec/BMP-0000-envelope.md` (shared envelope conventions),
-`spec/BMP-0005-agent-interaction-profile.md` §§5, 8, 10, and the published
-`poc/vectors/agent/positive.json` / `negative.json` schemas.
+Sources used: `spec/BMP-0000-bitcoin-machine-protocol.md` (shared envelope
+conventions), `spec/BMP-0005-agent-interaction-profile.md` R3 §§5, 8–10,
+and the published `poc/vectors/agent/positive.json` / `negative.json`.
 
 No file under `poc/agent/`, no `poc/tests/test_agent_wire.py`, no
 `poc/svcode/` agent helper, and no Codex source diff was read, imported,
 copied, or invoked. The Python codec is never called as a subprocess by
-this implementation. Existing repo suites are executed only as regression
-gates, not used as implementation guidance.
+this implementation. Existing repo suites (including `poc/agent/check_vectors.js`)
+are executed only as regression gates, not used as implementation guidance.
 
 ## Files
 
 | File | Role |
 |---|---|
 | `secp256k1.js` | Field/group arithmetic, pubkey derivation, RFC 6979 deterministic low-s ECDSA (`r‖s`, 64 bytes), verifier, OpenSSL cross-checks via `crypto` |
-| `jcs.js` | Strict RFC 8785 (JCS) canonicalization + canonical-only JSON parser (duplicate keys, noncanonical numbers/escapes/Unicode, depth bound all rejected) |
-| `wire.js` | 85-byte-prefix version `0x02` envelope encode/decode: target derivation, closed action schemas, base64/pin/outpoint rules, freshness windows, role checks, embedded requester advertisement, transcript context checks |
-| `test_parity.js` | Known-answer crypto tests → positive reproduction/decode → negative replay → 56 independent edge probes → deterministic manifest |
-| `manifest.json` | Generated deterministic evidence manifest (rewritten identically on every run) |
+| `jcs.js` | Strict RFC 8785 (JCS) canonicalization + canonical-only JSON parser (duplicate keys, noncanonical numbers/escapes/Unicode, negative zero, lone surrogates, depth bound all rejected) |
+| `wire.js` | 85-byte-prefix version `0x02` envelope encode/decode: target derivation, closed action schemas, base64/pin/outpoint rules, unconditional structural freshness, role/thread/reference binding, task expiry cap, provider-ad freshness, embedded requester advertisement, transcript context checks |
+| `fixtures_semantic.json` | Literal semantic inputs for all 12 published envelopes (recorded once from the published bytes); the encoder reproduces every golden envelope from these literals, never from decoder output |
+| `test_parity.js` | Known-answer crypto tests → semantic-fixture positive reproduction → negative replay (hard-fail category match) → 96 decode/edge probes + 10 encoder probes → deterministic manifest |
+| `manifest.json` | Generated deterministic evidence manifest (rewritten identically on every run; includes per-negative outcomes/codes and per-probe expectations) |
 
 ## Commands
 
@@ -55,8 +65,8 @@ Expected tail:
 ```text
 positives reproduced byte-exact: 12/12
 negatives rejected: 33/33 (code-category match 33/33)
-edge probes: 56
-assertions passed: 165, failed: 0
+edge probes: 106
+assertions passed: 345, failed: 0
 ALL PASS
 ```
 
@@ -73,10 +83,12 @@ Existing regression suites (documented working directory is `poc/`):
 
 ```bash
 cd poc
-pip install -r requirements.txt
 python -m pytest tests -q          # 198 passed at this commit
+node agent/check_vectors.js        # C1 Node/OpenSSL check: 12 envelopes passed
 node js_tests/svctest_l2l3.js      # 27 passed, 0 failed
 node js_tests/svctest_ble.js       # 26 passed, 0 failed
+node js_tests/svctest_headers.js   # 3645 passed, 0 failed
+node js_tests/svctest_review.js    # 16 passed, 0 failed
 ```
 
 (On the build host the venv `python` lacked pytest; the suite was run with
@@ -86,27 +98,67 @@ the system interpreter that owns the installed requirements,
 ## What the suite checks
 
 1. **Known-answer first:** secp256k1 pubkey/address/target derivation KATs,
-   RFC 6979 determinism, low-s, self-verify, and OpenSSL cross-verification
-   of our deterministic signatures (and our verifier against OpenSSL
-   random-k signatures) — all before any negative signature test.
-2. **Positives (12):** every published envelope is decoded, its sha256 and
-   signature independently verified (OpenSSL), then **re-encoded purely
-   from semantic fixture data** — `envelopeHex` is used only as the
-   comparison target, never as encoder output — and must match byte-for-byte.
-3. **Negatives (33):** every published mutation is rejected with the same
-   error code category (33/33 exact-category match).
-4. **Edge probes (56):** duplicate keys; noncanonical key order, escapes,
-   numbers, Unicode, BOM, control chars, trailing bytes; nesting depth;
-   invalid/uncompressed/uppercase curve points; bad address checksum;
-   pin/outpoint format and overflow; base64 alphabet/length; version,
-   action, length strictness; closed schemas; role/thread/window rules;
-   text/resource bounds; high-s and out-of-range s; wrong-target and
-   wrong-action reference binding under transcript context.
+   a fixed RFC 6979 `r‖s` known-answer (key 1, "Satoshi Nakamoto",
+   cross-checked against an independent pure-Python RFC 6979
+   implementation), determinism, low-s, self-verify, and OpenSSL
+   cross-verification in both directions — all before any negative
+   signature test.
+2. **JCS / encoding boundary units:** depth 64/65 on both serializer and
+   parser, negative zero, lone surrogates, astral surrogate pairs, UTF-16
+   code-unit key order, Base64 canonical/padding/alphabet boundaries,
+   Base58 leading zeros/alphabet/65-char resource bound, outpoint vout
+   format and uint32 overflow.
+3. **Positives (12):** every published envelope is decoded, its sha256 and
+   signature independently verified (OpenSSL), decoded `action`/`messageId`
+   asserted equal to the published fixture metadata, then **re-encoded
+   purely from the literal semantic fixtures** — `envelopeHex` is used only
+   as the comparison target, never as encoder input — and must match
+   byte-for-byte. A decode→encode byte/signature roundtrip is recorded
+   separately in the manifest.
+4. **Negatives (33):** every published mutation is rejected with the same
+   error code category; a category mismatch **fails the suite** (not a
+   printed note), and each negative's outcome/code is recorded in the
+   manifest. Both mutation models (splice and append-zeroes) are exercised.
+5. **Decode/edge probes (96):** the original battery (canonical JSON,
+   curve points, addresses, pins, base64, version/action/length, closed
+   schemas, high-s, target/reference binding) plus validly re-signed
+   false-accept regressions for every Q1R protocol correction, with
+   null-context and full-context variants where relevant:
+   - RECEIPT offerHash→OFFER resolution and DELIVER offer binding (item 1);
+   - unconditional `Expires_At > Created_At` and per-action windows without
+     a receiver clock, with exact boundary controls (item 2);
+   - PAYMENT requires the matching ACCEPT + provider ACCEPT_ACK pair (item 3);
+   - task expiry cap at REQUEST `deliverBy + 86400`, boundary included (item 4);
+   - provider advertisement freshness at REQUEST when `now` is supplied (item 5);
+   - outer REQUEST `identityEvidence` forbidden (item 6);
+   - identity PROOF `agentPin` local binding without context (item 7);
+   - trailing empty URL fragment and the full single-line terminator class
+     (VT/FF/NEL/U+2028/U+2029) in REJECT reason, tab accepted (item 8);
+   - long-address rejection before BigInt conversion (item 10);
+   - full MIME token grammar, 100/101-byte boundaries, body timestamps as
+     safe integers with chronology rules (beyond-uint32 `deliverBy`/`payBy`
+     accepted, unsafe integers rejected), header timestamps stay uint32
+     (item 11);
+   - JSON nesting depth 65 rejection at envelope level.
+6. **Encoder probes (10):** negative zero and lone surrogates rejected
+   before signing, outer REQUEST evidence rejected, wrong signer key
+   (pubkey mismatch) rejected instead of emitting an invalid envelope,
+   zero/out-of-range private keys rejected, structural freshness enforced
+   at encode time, astral content round-trip, and a byte-exact positive
+   control (item 9, 12).
 
 ## Verification status at commit
 
-- Independent suite: 165 assertions, 0 failures; twice-run byte-identical.
+- Independent suite: 345 assertions, 0 failures; 12/12 positives
+  byte-exact from literal semantic fixtures; 33/33 negatives rejected with
+  exact category match; 106 probes (96 decode/edge + 10 encoder).
+- Twice-run gate: stdout and manifest byte-identical
+  (stdout sha256 `c11103a7d6c5d838a22953d47ccc6be01c3daab1b3373bec142476ab7a9da5ca`,
+  manifest sha256 `9b09d57ffd90ff1ea4063d52c4071abafa81e9c50f22007d8e57304f9dc50507`).
 - `python -m pytest tests -q`: 198 passed.
+- `node agent/check_vectors.js` (C1 Node/OpenSSL): 12 envelopes passed.
 - `node js_tests/svctest_l2l3.js`: 27 passed, 0 failed.
 - `node js_tests/svctest_ble.js`: 26 passed, 0 failed.
-- `git diff --check db3e1fb..HEAD`: clean; diff limited to this directory.
+- `node js_tests/svctest_headers.js`: 3645 passed, 0 failed.
+- `node js_tests/svctest_review.js`: 16 passed, 0 failed.
+- `git diff --check 2f9cd4f..HEAD`: clean; diff limited to this directory.

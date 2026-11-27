@@ -1,264 +1,489 @@
 'use strict';
-// Independent BMP-0005 parity + adversarial suite. Run: node test_parity.js
-// Reads ONLY the published JSON vectors and the normative-spec-derived codec
-// in this directory. Writes a deterministic manifest for the twice-run gate.
+// Independent BMP-0005 parity + adversarial suite (Q1R corrected).
+// Run: node test_parity.js
+// Reads only the published JSON vectors plus the literal semantic fixtures in
+// fixtures_semantic.json (semantic fields of each published envelope, recorded
+// once from the published bytes; the encoder reproduces every golden envelope
+// from those literal inputs, not from decoder output). Writes a deterministic
+// manifest (manifest.json) for the twice-run gate.
+// Offline only: no network, no wallets, no funded transactions. Signing uses
+// published test keys exclusively. The BigInt signer is variable-time and does
+// not zeroize secrets — PoC only, never production (see secp256k1.js).
 
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const wire = require('./wire.js');
 const secp = require('./secp256k1.js');
 const jcs = require('./jcs.js');
-const wire = require('./wire.js');
 
 const VEC = path.join(__dirname, '..', 'vectors', 'agent');
 const positive = JSON.parse(fs.readFileSync(path.join(VEC, 'positive.json'), 'utf8'));
 const negative = JSON.parse(fs.readFileSync(path.join(VEC, 'negative.json'), 'utf8'));
+const FIXTURES = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures_semantic.json'), 'utf8'));
 const NOW = positive.now;
+// positive.cases is keyed by case name; negative.json is a bare array.
+const posCases = Object.entries(positive.cases).map(([name, c]) => ({ name, ...c }));
+const negCases = Array.isArray(negative) ? negative : negative.cases;
+
+const manifest = {
+  scope: 'BMP-0005 R3 wire/JSON/signature/address/target parity (no PAID/SPV/live/Stable claims)',
+  now: NOW,
+  positives: [],
+  negatives: [],
+  probes: [],
+};
 
 let pass = 0, failed = 0;
-const failures = [];
 function ok(cond, label) {
   if (cond) { pass++; }
-  else { failed++; failures.push(label); console.error('  FAIL: ' + label); }
+  else { failed++; console.log(`FAIL: ${label}`); }
 }
-function section(t) { console.log('\n== ' + t + ' =='); }
+function deepEq(a, b) { try { assert.deepStrictEqual(a, b); return true; } catch (_) { return false; } }
 
 const keyByPub = {};
 for (const k of positive.publishedTestPrivateKeys) keyByPub[secp.derivePubkey(k)] = k;
 const posByName = {};
-for (const [name, c] of Object.entries(positive.cases)) posByName[name] = { ...c, name };
+for (const c of posCases) posByName[c.name] = c;
 const srcBytes = name => Buffer.from(posByName[name].envelopeHex, 'hex');
 
-// ---------------------------------------------------------------- A. crypto KAT
-section('A. secp256k1 / RFC6979 known-answer + cross-verifier');
-{
-  const k1 = keyByPub['0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'];
-  const k2 = keyByPub['02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5'];
-  ok(secp.derivePubkey(k1) === '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', 'derive pubkey 1');
-  ok(secp.derivePubkey(k2) === '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5', 'derive pubkey 2');
-  ok(wire.targetId('0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798').toString('hex') === '60604559', 'target id requester');
-  ok(wire.targetId('02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5').toString('hex') === '13e5b3b1', 'target id provider');
-  ok(wire.deriveAddress('0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798') === '1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH', 'derive address 1');
-  ok(wire.deriveAddress('02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5') === '1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP', 'derive address 2');
-  const msg = Buffer.from('BMP-0005 deterministic signing probe');
-  const s1 = secp.signDeterministic(k1, msg);
-  const s2 = secp.signDeterministic(k1, msg);
-  ok(s1.equals(s2), 'RFC6979 determinism (same bytes twice)');
-  ok(secp.isLowS(s1), 'signature is low-s');
-  ok(secp.verifySignature(secp.derivePubkey(k1), msg, s1), 'self-verify deterministic sig');
-  ok(secp.opensslVerify(secp.derivePubkey(k1), msg, s1), 'OpenSSL verifies our deterministic sig');
-  const rnd = secp.opensslSignRandomK(k2, msg);
-  ok(secp.verifySignature(secp.derivePubkey(k2), msg, rnd), 'our verifier accepts OpenSSL random-k sig');
-  ok(!secp.verifySignature(secp.derivePubkey(k1), Buffer.from('tampered'), s1), 'verify rejects tampered message');
-  ok(!secp.isOnCurve('02' + 'ff'.repeat(32)), 'reject x >= field prime');
-  ok(!secp.isOnCurve('04' + '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'), 'reject uncompressed prefix');
-}
+// ---------------------------------------------------------------------------
+console.log('== A. secp256k1 / RFC6979 known-answer + cross-verifier ==');
+const k1 = '0000000000000000000000000000000000000000000000000000000000000001';
+const k2 = '0000000000000000000000000000000000000000000000000000000000000002';
+ok(secp.derivePubkey(k1) === '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', 'derivePubkey(1) = G');
+ok(secp.derivePubkey(k2) === '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5', 'derivePubkey(2) = 2G');
+ok(wire.targetId(secp.derivePubkey(k1)).toString('hex') === '60604559', 'target derivation pubkey(1)');
+ok(wire.targetId(secp.derivePubkey(k2)).toString('hex') === '13e5b3b1', 'target derivation pubkey(2)');
+ok(wire.deriveAddress(secp.derivePubkey(k1)) === '1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH', 'address(1)');
+ok(wire.deriveAddress(secp.derivePubkey(k2)) === '1cMh228HTCiwS8ZsaakH8A8wze1JR5ZsP', 'address(2)');
+const msg = Buffer.from('BMP-0005 deterministic signing probe');
+const s1 = secp.signDeterministic(k1, msg);
+const s1again = secp.signDeterministic(k1, msg);
+ok(s1.equals(s1again), 'RFC6979 determinism (same bytes twice)');
+ok(secp.isLowS(s1.subarray(32)), 'signature low-s');
+ok(secp.verifySignature(secp.derivePubkey(k1), msg, s1), 'self-verify signature');
+ok(secp.opensslVerify(secp.derivePubkey(k1), msg, s1), 'OpenSSL verifies our RFC6979 signature');
+const osslSig = secp.opensslSignRandomK(k2, msg);
+ok(secp.verifySignature(secp.derivePubkey(k2), msg, osslSig), 'we verify OpenSSL random-k signature');
+ok(!secp.verifySignature(secp.derivePubkey(k2), Buffer.from('tampered'), osslSig), 'tampered message rejected');
+ok(!secp.isOnCurve('02' + 'ff'.repeat(32)), 'x >= field prime rejected');
+ok(!secp.isOnCurve('04' + '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'), 'uncompressed prefix rejected');
+// Fixed RFC6979 known-answer (private key 1, message "Satoshi Nakamoto"),
+// cross-checked against an independent pure-Python RFC6979 implementation.
+const katSig = secp.signDeterministic(k1, Buffer.from('Satoshi Nakamoto'));
+ok(katSig.toString('hex') ===
+  '934b1ea10a4b3c1757e2b0c017d0b6143ce3c9a7e6a4a49860d7a6ab210ee3d8' +
+  '2442ce9d2b916064108014783e923ec36b49743e2ffa1c4496f01a512aafd9e5',
+  'RFC6979 fixed KAT r||s (key 1, "Satoshi Nakamoto")');
+ok(secp.opensslVerify(secp.derivePubkey(k1), Buffer.from('Satoshi Nakamoto'), katSig), 'OpenSSL verifies fixed KAT signature');
 
-// ------------------------------------------- B. positive reproduction + decode
-section('B. positive golden vectors: decode, hash, signature, byte-exact re-encode');
+// ---------------------------------------------------------------------------
+console.log('== A2. JCS / Base64 / Base58 / outpoint boundary units ==');
+const chain = n => { let o = { v: 1 }; for (let i = 0; i < n; i++) o = { c: o }; return o; };
+ok(jcs.jcsSerialize(chain(63)).length > 0, 'JCS depth 64 accepted');
+let depthThrew = false;
+try { jcs.jcsSerialize(chain(64)); } catch (e) { depthThrew = e instanceof jcs.JsonError; }
+ok(depthThrew, 'JCS depth 65 rejected');
+const jcsThrows = fn => { try { fn(); return false; } catch (e) { return e instanceof jcs.JsonError; } };
+// Positive/negative boundary controls at the canonical-JSON layer (typed
+// envelope bodies cannot legally nest this deep, so the boundary is tested
+// where §5.4 enforces it): 64 levels parse, 65 do not.
+let parseDepth64ok = true;
+try { jcs.parseCanonical(jcs.canonicalBytes(chain(63))); } catch (_) { parseDepth64ok = false; }
+ok(parseDepth64ok, 'parseCanonical depth 64 accepted');
+ok(jcsThrows(() => jcs.parseCanonical(Buffer.from(JSON.stringify(chain(64)), 'utf8'))), 'parseCanonical depth 65 rejected');
+ok(jcsThrows(() => jcs.jcsSerialize(-0)), 'JCS rejects negative zero');
+ok(jcsThrows(() => jcs.jcsSerialize('x\uD800y')), 'JCS rejects lone high surrogate');
+ok(jcsThrows(() => jcs.jcsSerialize('x\uDC00y')), 'JCS rejects lone low surrogate');
+ok(jcs.jcsSerialize('🚀') === '"🚀"', 'JCS surrogate pair (astral) round-trips');
+// UTF-16 code-unit key order: U+10000 (astral) sorts before U+E000 (BMP).
+ok(jcs.jcsSerialize({ '\uE000': 1, '\u{10000}': 2 }) === '{"' + '\u{10000}' + '":2,"' + '\uE000' + '":1}', 'JCS UTF-16 key order (astral before BMP U+E000)');
+ok(jcs.jcsSerialize({ b: 1, a: 2 }) === '{"a":2,"b":1}', 'JCS key sort');
+ok(jcs.jcsSerialize({ z: 'é', a: '\n' }) === '{"a":"\\n","z":"é"}', 'JCS escapes/non-ASCII literal');
+const b64Throws = s => { try { wire.checkBase64(s, '$'); return false; } catch (e) { return e instanceof wire.WireError && e.code === 'base64'; } };
+ok(b64Throws(''), 'Base64 empty rejected');
+ok(b64Throws('A'), 'Base64 length%4==1 rejected');
+ok(b64Throws('AB'), 'Base64 unpadded rejected');
+ok(b64Throws('A==='), 'Base64 excess padding rejected');
+ok(b64Throws('AB=C'), 'Base64 interior padding rejected');
+ok(b64Throws('aa=='), 'Base64 nonzero pad bits rejected');
+ok(b64Throws('AAB'), 'Base64 3-char unpadded rejected');
+ok(!b64Throws('QUJD'), 'Base64 no-pad-needed canonical accepted');
+ok(!b64Throws('QQ==') && !b64Throws('QUI=') && !b64Throws('QUJD'), 'Base64 canonical forms accepted');
+const pinOk = s => { try { wire.checkPin(s, '$'); return true; } catch (_) { return false; } };
+ok(pinOk('a'.repeat(64) + '.0'), 'outpoint vout 0 accepted');
+ok(pinOk('a'.repeat(64) + '.4294967295'), 'outpoint vout uint32 max accepted');
+ok(!pinOk('a'.repeat(64) + '.4294967296'), 'outpoint vout beyond uint32 rejected');
+ok(!pinOk('a'.repeat(64) + '.01'), 'outpoint leading zero rejected');
+ok(!pinOk('a'.repeat(64) + '.-1'), 'outpoint negative rejected');
+ok(!pinOk('A'.repeat(64) + '.0'), 'outpoint uppercase txid rejected');
+// Base58 units (resource bound + leading zeros + alphabet).
+const b25 = Buffer.from('000102030405060708090a0b0c0d0e0f101112131415161718', 'hex');
+ok(wire.b58decode(wire.b58encode(b25)).equals(b25), 'Base58 roundtrip 25 bytes');
+ok(wire.b58encode(Buffer.from('0000deadbeef', 'hex')).startsWith('11'), 'Base58 leading zero bytes -> 1s');
+ok(wire.b58decode(wire.b58encode(Buffer.from('0000deadbeef', 'hex'))).equals(Buffer.from('0000deadbeef', 'hex')), 'Base58 leading-zero roundtrip');
+ok(wire.b58decode('0OIl') === null, 'Base58 invalid alphabet chars rejected');
+ok(wire.b58decode('') === null, 'Base58 empty rejected');
+ok(wire.b58decode('1'.repeat(65)) === null, 'Base58 65-char string rejected before BigInt (resource bound)');
+ok(wire.b58decode('1'.repeat(64)).length === 64, 'Base58 64-char boundary decodes (no superlinear work)');
+const addrPayload = wire.b58decode('1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH');
+ok(addrPayload && addrPayload.length === 25 && addrPayload[0] === 0x00, 'Base58 known mainnet address payload');
+
+// ---------------------------------------------------------------------------
+console.log('== B. positive golden vectors: literal semantic fixtures reproduce bytes ==');
+ok(Object.keys(FIXTURES).length === 12, 'literal semantic fixtures cover all 12 cases');
 const decoded = {};
-const manifest = { scope: positive.scope, now: NOW, positives: [], probes: [] };
-{
-  // first pass without context to build the transcript index
-  const list = [];
-  for (const c of Object.values(posByName)) {
-    const d = wire.decodeEnvelope(srcBytes(c.name), { now: NOW, context: null });
-    decoded[c.name] = d;
-    list.push(d);
-  }
-  const ctx = wire.makeContext(list);
-  for (const c of Object.values(posByName)) {
-    const buf = srcBytes(c.name);
-    const d = wire.decodeEnvelope(buf, { now: NOW, context: ctx }); // full context checks
-    ok(d.sha256 === c.sha256, `${c.name}: envelope sha256 matches published`);
-    // independent OpenSSL cross-verification of the published signature
-    const signedBytes = Buffer.concat([buf.subarray(0, 21), buf.subarray(85)]);
-    ok(secp.opensslVerify(d.from.pubkey, signedBytes, buf.subarray(21, 85)), `${c.name}: OpenSSL verifies published sig`);
-    // re-encode purely from semantic fixture data (no envelopeHex reuse)
-    const fx = {
-      action: d.action, createdAt: d.createdAt, expiresAt: d.expiresAt,
-      messageId: d.messageId, threadId: d.threadId,
-      from: d.from, to: d.to, body: d.body,
-      privateKey: keyByPub[d.from.pubkey],
-    };
-    const enc = wire.encodeEnvelope(fx);
-    ok(enc.bytes.equals(buf), `${c.name}: re-encoded bytes identical to golden envelopeHex`);
-    ok(enc.sha256 === c.sha256, `${c.name}: re-encoded sha256 matches`);
-    ok(enc.signatureHex === d.signatureHex, `${c.name}: deterministic r||s matches golden signature`);
-    manifest.positives.push({ name: c.name, hex: enc.bytes.toString('hex'), sha256: enc.sha256 });
-  }
-  ok(Object.keys(decoded).length === 12, 'decoded 12 positive envelopes');
+for (const c of posCases) {
+  const buf = srcBytes(c.name);
+  const d = wire.decodeEnvelope(buf, { context: null, now: NOW });
+  ok(d.sha256 === c.sha256, `${c.name}: envelope sha256 matches published`);
+  ok(d.action === c.action && d.messageId === c.messageId, `${c.name}: decoded action/messageId match published metadata`);
+  ok(secp.opensslVerify(d.from.pubkey, Buffer.concat([buf.subarray(0, 21), buf.subarray(85)]), Buffer.from(d.signatureHex, 'hex')),
+    `${c.name}: OpenSSL verifies envelope signature`);
+  decoded[c.name] = d;
 }
 const fullCtx = wire.makeContext(Object.values(decoded));
-
-// ------------------------------------------------------- C. negative replay
-section('C. negative mutations: all must be rejected');
-function applyMutation(neg) {
-  const src = srcBytes(neg.source);
-  if (neg.appendZeroes) return Buffer.concat([src, Buffer.alloc(neg.appendZeroes)]);
-  const ins = Buffer.from(neg.insertHex || '', 'hex');
-  return Buffer.concat([src.subarray(0, neg.offset), ins, src.subarray(neg.offset + (neg.remove || 0))]);
+for (const c of posCases) {
+  const buf = srcBytes(c.name);
+  const d = wire.decodeEnvelope(buf, { context: fullCtx, now: NOW });
+  ok(d.sha256 === c.sha256, `${c.name}: full-context decode sha256`);
+  ok(d.action === c.action && d.messageId === c.messageId, `${c.name}: full-context action/messageId match published metadata`);
+  // The literal semantic fixture must equal the decoded semantics of the
+  // published bytes (ties the committed fixture to the published vector).
+  // JSON-normalize both sides: the parser returns null-prototype objects.
+  const sem = FIXTURES[c.name];
+  ok(deepEq(JSON.parse(JSON.stringify({ action: d.action, createdAt: d.createdAt, expiresAt: d.expiresAt, messageId: d.messageId, threadId: d.threadId, from: d.from, to: d.to, body: d.body })), sem),
+    `${c.name}: literal semantic fixture equals decoded semantics`);
+  // Semantic reproduction: encode from the LITERAL fixture inputs only.
+  const encSem = wire.encodeEnvelope({ ...structuredClone(sem), privateKey: keyByPub[sem.from.pubkey] });
+  ok(encSem.bytes.equals(buf), `${c.name}: semantic fixture re-encode byte-exact`);
+  ok(encSem.sha256 === c.sha256, `${c.name}: semantic fixture re-encode sha256 match`);
+  ok(encSem.signatureHex === d.signatureHex, `${c.name}: semantic fixture re-encode signature byte-exact`);
+  // Decode->encode roundtrip (distinct claim: re-encode of decoder output).
+  const encRt = wire.encodeEnvelope({ action: d.action, createdAt: d.createdAt, expiresAt: d.expiresAt, messageId: d.messageId, threadId: d.threadId, from: d.from, to: d.to, body: d.body, privateKey: keyByPub[d.from.pubkey] });
+  ok(encRt.bytes.equals(buf), `${c.name}: decode->encode roundtrip byte-exact`);
+  manifestPushPositive(c, encSem);
 }
+function manifestPushPositive(c, enc) {
+  manifest.positives.push({ name: c.name, action: c.action, messageId: c.messageId, sha256: enc.sha256, hex: enc.bytes.toString('hex'), semanticFixtureReproduced: true, decodeEncodeRoundtrip: true });
+}
+
+// ---------------------------------------------------------------------------
+console.log('== C. negative mutations: all must be rejected with matching category ==');
 let negRejected = 0, negCodeMatch = 0;
-for (const neg of negative) {
-  const buf = applyMutation(neg);
-  const opts = { now: neg.now ?? NOW, context: neg.context ? fullCtx : null };
-  let err = null;
-  try { wire.decodeEnvelope(buf, opts); } catch (e) { err = e; }
-  const rejected = err instanceof wire.WireError;
-  ok(rejected, `negative[${neg.name}] ${neg.source}/${neg.code}: rejected`);
-  if (rejected) {
-    negRejected++;
-    if (err.code === neg.code) negCodeMatch++;
-    else console.error(`  note: negative[${neg.name}] expected code ${neg.code}, got ${err.code} (${err.message})`);
+for (const neg of negCases) {
+  // Published mutation models: splice `remove` bytes at `offset` and insert
+  // insertHex, or append `appendZeroes` zero bytes; decode with the published
+  // per-case now/context settings.
+  const src = Buffer.from(posByName[neg.source].envelopeHex, 'hex');
+  let buf;
+  if (neg.appendZeroes !== undefined) {
+    buf = Buffer.concat([src, Buffer.alloc(neg.appendZeroes)]);
+  } else {
+    const ins = Buffer.from(neg.insertHex, 'hex');
+    buf = Buffer.concat([src.subarray(0, neg.offset), ins, src.subarray(neg.offset + neg.remove)]);
   }
+  let err = null;
+  try { wire.decodeEnvelope(buf, { context: neg.context ? fullCtx : null, now: neg.now }); } catch (e) { err = e; }
+  const rejected = err instanceof wire.WireError;
+  if (rejected) negRejected++;
+  const match = rejected && err.code === neg.code;
+  if (match) negCodeMatch++;
+  ok(rejected, `negative[${neg.name}] rejected`);
+  // Item 13: category mismatch is a HARD failure, not a note.
+  ok(match, `negative[${neg.name}] category match: published=${neg.code} got=${rejected ? err.code : 'ACCEPTED'}`);
+  manifest.negatives.push({ name: neg.name, source: neg.source, publishedCode: neg.code, publishedPath: neg.path, outcome: rejected ? 'reject' : 'ACCEPTED', code: rejected ? err.code : null, path: rejected ? err.path : null });
 }
-ok(negRejected === 33, 'all 33 negative mutations rejected');
-console.log(`  negative code-category match: ${negCodeMatch}/33`);
 
-// ------------------------------------------------------- D. edge probes
-section('D. independent edge probes');
-const payloadOf = name => ({
-  profile: wire.PROFILE, threadId: decoded[name].threadId, messageId: decoded[name].messageId,
-  from: decoded[name].from, to: decoded[name].to, body: decoded[name].body,
-});
-// rebuild an envelope with a new payload (and optional header edits), re-signed
-// with the source sender key so semantic-layer probes carry a VALID signature.
-function rebuild(name, payloadBytes, hdrEdit) {
+// ---------------------------------------------------------------------------
+console.log('== D. edge / false-accept probes (validly re-signed where noted) ==');
+const noClock = { context: null };
+let probeCount = 0;
+function probe(label, bytes, expectCode, opts) {
+  probeCount++;
+  let err = null;
+  try { wire.decodeEnvelope(bytes, opts || { context: null, now: NOW }); } catch (e) { err = e; }
+  const want = Array.isArray(expectCode) ? expectCode : [expectCode];
+  const good = expectCode === null ? err === null : err instanceof wire.WireError && want.includes(err.code);
+  ok(good, `probe ${label}: expected ${expectCode}, got ${err ? err.code + ' ' + err.message : 'accept'}`);
+  manifest.probes.push({ label, outcome: err ? 'reject' : 'accept', code: err ? err.code : null, expected: expectCode });
+}
+const canonBuf = name => srcBytes(name).subarray(85);
+const canonStr = name => canonBuf(name).toString('utf8');
+const chainText = n => '{"c":'.repeat(n) + '{"v":1}' + '}'.repeat(n);
+// Byte-level splice into a payload string field (injects bytes that JS
+// string->Buffer conversion would silently normalize, e.g. lone surrogates).
+function splicePayload(name, needleStr, replacementBuf) {
+  const pb = Buffer.from(canonBuf(name));
+  const needle = Buffer.from(needleStr, 'utf8');
+  const i = pb.indexOf(needle);
+  if (i < 0) throw new Error('splice anchor missing: ' + needleStr);
+  return Buffer.concat([pb.subarray(0, i), replacementBuf, pb.subarray(i + needle.length)]);
+}
+function rebuild(name, payloadBytes, hdrEdit, signerPub) {
   const src = srcBytes(name);
   const hdr = Buffer.from(src.subarray(0, 21));
   if (hdrEdit) hdrEdit(hdr);
   hdr.writeUInt16BE(payloadBytes.length, 19);
-  const sig = secp.signDeterministic(keyByPub[decoded[name].from.pubkey], Buffer.concat([hdr, payloadBytes]));
+  const d = wire.decodeEnvelope(src, { context: null });
+  // signerPub lets role-reversal probes re-sign with the NEW sender's key.
+  const sig = secp.signDeterministic(keyByPub[signerPub || d.from.pubkey], Buffer.concat([hdr, payloadBytes]));
   return Buffer.concat([hdr, sig, payloadBytes]);
 }
-const canonStr = name => jcs.jcsSerialize(payloadOf(name));
-const canonBuf = name => Buffer.from(canonStr(name), 'utf8');
-function mutate(name, fn) { const p = structuredClone(payloadOf(name)); fn(p); return jcs.canonicalBytes(p); }
+const mutate = (name, fn) => { const p = JSON.parse(canonStr(name)); fn(p); return Buffer.from(jcs.jcsSerialize(p), 'utf8'); };
 
-let probeCount = 0;
-function probe(label, bytes, expectCode, opts = {}) {
-  probeCount++;
-  let err = null;
-  try { wire.decodeEnvelope(bytes, { now: opts.now ?? NOW, context: opts.context ?? null }); } catch (e) { err = e; }
-  const want = Array.isArray(expectCode) ? expectCode : [expectCode];
-  const good = err instanceof wire.WireError && (expectCode ? want.includes(err.code) : true);
-  ok(good, `probe ${label}: expected ${expectCode || 'reject'}, got ${err ? err.code : 'ACCEPTED'}`);
-  if (err) manifest.probes.push({ label, code: err.code });
-  else manifest.probes.push({ label, code: 'ACCEPTED' });
-}
-
-// parse / canonicalization
-probe('duplicate top-level key', rebuild('accept', Buffer.from(canonStr('accept').slice(0, -1) + ',"profile":"bmp-agent/1"}')), 'duplicate');
-{
-  const p = payloadOf('accept');
-  const rev = '{' + Object.keys(p).reverse().map(k => jcs.jcsSerialize(k) + ':' + jcs.jcsSerialize(p[k])).join(',') + '}';
-  probe('noncanonical key order', rebuild('accept', Buffer.from(rev)), 'noncanonical');
-}
-probe('\\u-escaped ASCII key', rebuild('accept', Buffer.from(canonStr('accept').replace('"body"', '"\\u0062ody"'))), 'noncanonical');
-probe('exponent number', rebuild('payment', Buffer.from(canonStr('payment').replace('"amountSats":2500', '"amountSats":25e2'))), 'number');
-probe('negative number', rebuild('payment', Buffer.from(canonStr('payment').replace('"vout":0', '"vout":-1'))), 'number');
-probe('leading-zero number', rebuild('payment', Buffer.from(canonStr('payment').replace('"vout":0', '"vout":01'))), 'number');
-probe('unsafe integer', rebuild('payment', Buffer.from(canonStr('payment').replace('"amountSats":2500', '"amountSats":9007199254740993'))), 'number');
-probe('lone surrogate', rebuild('deliver', Buffer.from(canonStr('deliver').replace('Café.', 'Caf\\ud800.'))), 'noncanonical');
-probe('invalid UTF-8 byte', rebuild('deliver', Buffer.concat([canonBuf('deliver').subarray(0, 10), Buffer.from([0xff]), canonBuf('deliver').subarray(10)])), 'noncanonical');
-probe('UTF-8 BOM', rebuild('deliver', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), canonBuf('deliver')])), 'noncanonical');
-probe('raw control char in string', rebuild('deliver', Buffer.from(canonStr('deliver').replace('Summary', 'Sum\u0001mary'))), 'noncanonical');
-probe('trailing newline', rebuild('deliver', Buffer.concat([canonBuf('deliver'), Buffer.from('\n')])), 'noncanonical');
-{
-  let deep = '{"a":'.repeat(70) + '0' + '}'.repeat(70);
-  probe('nesting depth 70', rebuild('accept', Buffer.from(deep)), 'noncanonical');
-}
-
-// identity / curve / encoding
-probe('uncompressed pubkey prefix', rebuild('accept', mutate('accept', p => { p.from.pubkey = '04' + p.from.pubkey.slice(2); })), 'curve');
-probe('uppercase pubkey hex', rebuild('accept', mutate('accept', p => { p.from.pubkey = p.from.pubkey.toUpperCase(); })), 'curve');
-probe('address bad checksum', rebuild('accept', mutate('accept', p => { p.from.address = p.from.address.slice(0, -1) + (p.from.address.slice(-1) === 'H' ? 'J' : 'H'); })), 'address');
-probe('uppercase agentPin', rebuild('accept', mutate('accept', p => { p.from.agentPin = 'A' + p.from.agentPin.slice(1); })), 'format');
-probe('vout overflow', rebuild('accept', mutate('accept', p => { p.from.agentPin = '0'.repeat(64) + '.4294967296'; })), 'format');
-probe('vout leading zero', rebuild('accept', mutate('accept', p => { p.from.agentPin = '0'.repeat(64) + '.01'; })), 'format');
-probe('base64 invalid char', rebuild('proof-payment', mutate('proof-payment', p => { p.body.atomicBeef = 'Zh-='; })), 'base64');
-probe('base64 bad length', rebuild('proof-payment', mutate('proof-payment', p => { p.body.atomicBeef = 'Zh='; })), 'base64');
-probe('empty identityEvidence', rebuild('provider-ad', mutate('provider-ad', p => { p.from.identityEvidence = ''; })), 'base64');
-
-// header / length
-{
-  const b = Buffer.from(srcBytes('accept')); b[0] = 0x03;
-  probe('version 0x03', b, 'version');
-}
-{
-  const b = Buffer.from(srcBytes('accept')); b.writeUInt16BE(0xa00a, 5);
-  probe('unknown action 0xA00A', b, 'action');
-}
-{
-  const b = Buffer.from(srcBytes('accept')); b.writeUInt16BE(b.readUInt16BE(19) + 1, 19);
-  probe('payload length +1', b, 'length');
-}
-probe('trailing byte', Buffer.concat([srcBytes('accept'), Buffer.from([0x00])]), 'length');
-probe('84-byte header', srcBytes('accept').subarray(0, 84), 'truncated');
-
-// semantic layer (valid signatures via rebuild)
-probe('wrong profile', rebuild('accept', mutate('accept', p => { p.profile = 'bmp-agent/2'; })), 'format');
-probe('unknown top-level field', rebuild('accept', mutate('accept', p => { p.extra = 1; })), 'unknown');
-probe('missing required body field', rebuild('accept', mutate('accept', p => { delete p.body.offerHash; })), 'missing');
-probe('REQUEST threadId != messageId', rebuild('request', mutate('request', p => { p.threadId = 'e'.repeat(32); })), 'thread');
-{
-  const prov = decoded['provider-ad'].to;
-  const b = rebuild('requester-ad', mutate('requester-ad', p => { p.to = structuredClone(prov); }),
-    hdr => wire.targetId(prov.pubkey).copy(hdr, 1));
-  probe('ADVERTISE not self-addressed', b, 'role');
-}
-probe('same agentPin both parties', rebuild('accept', mutate('accept', p => { p.to.agentPin = p.from.agentPin; })), 'distinct');
-probe('Created_At now+301', rebuild('accept', canonBuf('accept'), hdr => hdr.writeUInt32BE(NOW + 301, 7)), 'future');
-probe('Expires_At == Created_At', rebuild('accept', canonBuf('accept'), hdr => hdr.writeUInt32BE(NOW, 11)), 'window');
-probe('ACCEPT window 901s', rebuild('accept', canonBuf('accept'), hdr => hdr.writeUInt32BE(NOW + 901, 11)), 'window');
-probe('arrived after expiry', rebuild('accept', canonBuf('accept')), 'expired', { now: NOW + 601 });
-probe('task 4097 bytes', rebuild('request', mutate('request', p => { p.body.task = 'x'.repeat(4097); })), 'text');
-probe('description 281 bytes', rebuild('provider-ad', mutate('provider-ad', p => { p.body.services[0].description = 'x'.repeat(281); })), 'text');
-probe('17 services', rebuild('provider-ad', mutate('provider-ad', p => {
-  const e = p.body.services[0]; p.body.services = Array.from({ length: 17 }, (_, i) => ({ ...e, kind: 'kind-' + i }));
-})), 'number');
-probe('reject reason multiline', rebuild('reject', mutate('reject', p => { p.body.reason = 'a\nb'; })), 'text');
-probe('deliver content 16385 bytes', rebuild('deliver', mutate('deliver', p => { p.body.content = 'x'.repeat(16385); })), 'text');
-probe('uppercase mime', rebuild('deliver', mutate('deliver', p => { p.body.mime = 'Text/Markdown'; })), 'format');
-probe('http endpoint', rebuild('provider-ad', mutate('provider-ad', p => { p.body.endpoint = 'http://provider.example/x'; })), 'format');
+// --- original edge battery (kept) ---
+probe('uppercase hex hash', rebuild('accept', mutate('accept', p => { p.body.offerHash = p.body.offerHash.toUpperCase(); })), 'format');
+probe('uppercase hex txid', rebuild('payment', mutate('payment', p => { p.body.txid = 'A' + p.body.txid.slice(1); })), 'format');
+probe('pin leading-zero vout', rebuild('receipt', mutate('receipt', p => { p.body.paymentId = p.body.paymentId.replace('.0', '.00'); })), 'format');
+probe('pin negative vout', rebuild('receipt', mutate('receipt', p => { p.body.paymentId = p.body.paymentId.replace('.0', '.-1'); })), 'format');
+probe('pin vout overflow', rebuild('receipt', mutate('receipt', p => { p.body.paymentId = p.body.paymentId.replace('.0', '.4294967296'); })), 'format');
+probe('float number', rebuild('payment', Buffer.from(canonStr('payment').replace('"amountSats":2500', '"amountSats":1.5'), 'utf8')), 'number');
+probe('exponent number', rebuild('payment', Buffer.from(canonStr('payment').replace('"amountSats":2500', '"amountSats":2.5e3'), 'utf8')), 'number');
+probe('negative zero', rebuild('payment', Buffer.from(canonStr('payment').replace('"vout":0', '"vout":-0'), 'utf8')), 'number');
+probe('unsafe integer', rebuild('payment', Buffer.from(canonStr('payment').replace('"amountSats":2500', '"amountSats":9007199254740993'), 'utf8')), 'number');
+probe('payload nesting depth 65 rejected', rebuild('accept', Buffer.from(canonStr('accept').replace(/"body":\{[^{}]*\}/, '"body":' + chainText(63)), 'utf8')), 'noncanonical');
+probe('duplicate key', rebuild('accept', Buffer.from(canonStr('accept').replace('"body":{', '"body":{"offerHash":"x",'), 'utf8')), 'duplicate');
+probe('lone surrogate (invalid UTF-8 bytes)', rebuild('deliver', splicePayload('deliver', 'text/markdown', Buffer.concat([Buffer.from('text/mark'), Buffer.from([0xed, 0xa0, 0x80]), Buffer.from('down')]))), 'noncanonical');
+probe('raw control char', rebuild('deliver', splicePayload('deliver', 'text/markdown', Buffer.concat([Buffer.from('text/mark'), Buffer.from([0x0a]), Buffer.from('down')]))), 'noncanonical');
+probe('bad escape', rebuild('deliver', splicePayload('deliver', 'text/markdown', Buffer.from('text/mark\\qdown'))), 'noncanonical');
+// DELIVER content is raw UTF-8 text (§10.6), NOT base64; base64 canonicality
+// probes target identityEvidence (ADVERTISE) and atomicBeef (PAYMENT/PROOF).
+probe('unpadded base64', rebuild('requester-ad', mutate('requester-ad', p => { p.from.identityEvidence = 'QUI'; })), 'base64');
+probe('nonzero pad bits', rebuild('requester-ad', mutate('requester-ad', p => { p.from.identityEvidence = 'QR=='; })), 'base64');
+probe('empty base64', rebuild('requester-ad', mutate('requester-ad', p => { p.from.identityEvidence = ''; })), 'base64');
+probe('base64url chars', rebuild('requester-ad', mutate('requester-ad', p => { p.from.identityEvidence = 'ab-_'; })), 'base64');
+probe('deliver content over 16384 bytes', rebuild('deliver', mutate('deliver', p => { p.body.content = 'x'.repeat(16385); })), 'text');
+probe('deliver content exactly 16384 bytes accepted (boundary)', rebuild('deliver', mutate('deliver', p => { p.body.content = 'x'.repeat(16384); })), null);
+probe('mime uppercase', rebuild('deliver', mutate('deliver', p => { p.body.mime = 'Text/Markdown'; })), 'format');
+probe('mime over 100 bytes', rebuild('deliver', mutate('deliver', p => { p.body.mime = 'text/' + 'a'.repeat(96); })), 'format');
+probe('endpoint http', rebuild('provider-ad', mutate('provider-ad', p => { p.body.endpoint = 'http://provider.example/x'; })), 'format');
+probe('endpoint userinfo', rebuild('provider-ad', mutate('provider-ad', p => { p.body.endpoint = 'https://user@provider.example/x'; })), 'format');
 probe('endpoint fragment', rebuild('provider-ad', mutate('provider-ad', p => { p.body.endpoint = 'https://provider.example/x#f'; })), 'format');
-probe('deliverBy <= expires', rebuild('request', mutate('request', p => { p.body.deliverBy = decoded['request'].expiresAt; })), 'window');
-probe('offer acceptBefore <= created', rebuild('offer', mutate('offer', p => { p.body.terms.acceptBefore = decoded['offer'].createdAt; })), 'window');
-probe('paymentAddress != provider', rebuild('offer', mutate('offer', p => { p.body.terms.paymentAddress = decoded['requester-ad'].from.address; })), 'address');
-probe('unknown reject code', rebuild('reject', mutate('reject', p => { p.body.code = 'nope'; })), 'format');
-probe('payment proof with agentPin', rebuild('proof-payment', mutate('proof-payment', p => { p.body.agentPin = '0'.repeat(64) + '.0'; })), 'unknown');
+probe('endpoint query accepted', rebuild('provider-ad', mutate('provider-ad', p => { p.body.endpoint = 'https://provider.example/x?q=1'; })), null);
+probe('reason newline', rebuild('reject', mutate('reject', p => { p.body.reason = 'a\nb'; })), 'text');
+probe('reason 281 bytes', rebuild('reject', mutate('reject', p => { p.body.reason = 'a'.repeat(281); })), 'text');
+probe('reason 280 bytes accepted', rebuild('reject', mutate('reject', p => { p.body.reason = 'a'.repeat(280); })), null);
+probe('Expires_At == Created_At', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => hdr.writeUInt32BE(NOW, 11)), 'window');
+probe('ACCEPT window 901s', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => hdr.writeUInt32BE(NOW + 901, 11)), 'window');
+probe('ACCEPT window 900s accepted', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => hdr.writeUInt32BE(NOW + 900, 11)), null);
+probe('future skew +301', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => { hdr.writeUInt32BE(NOW + 301, 7); hdr.writeUInt32BE(NOW + 901, 11); }), 'future');
+probe('future skew +300 accepted', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => { hdr.writeUInt32BE(NOW + 300, 7); hdr.writeUInt32BE(NOW + 900, 11); }), null);
+probe('expired arrival', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => { hdr.writeUInt32BE(NOW - 500, 7); hdr.writeUInt32BE(NOW - 1, 11); }), 'expired');
+probe('requester evidence in to', rebuild('requester-ad', mutate('requester-ad', p => { p.to.identityEvidence = 'V0lSRS1PTkxZ'; })), 'duplicate-proof');
+probe('proof-payment agentPin forbidden', rebuild('proof-payment', mutate('proof-payment', p => { p.body.agentPin = p.from.agentPin; })), 'unknown');
 probe('identity proof missing agentPin', rebuild('proof-identity', mutate('proof-identity', p => { delete p.body.agentPin; })), 'missing');
-probe('receipt outcome rejected', rebuild('receipt', mutate('receipt', p => { p.body.outcome = 'rejected'; })), 'format');
-// high-s and out-of-range s on an otherwise valid envelope
+probe('offer paymentAddress != provider address', rebuild('offer', mutate('offer', p => { p.body.terms.paymentAddress = '1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH'; })), 'address');
+// Third principal from locally derived test scalar 3 (offline, low-value):
+// distinct from both published parties, so the probe isolates the §10.5
+// provider-recipient rule instead of tripping the structural `distinct` check.
+const k3 = '0000000000000000000000000000000000000000000000000000000000000003';
+const pub3 = secp.derivePubkey(k3);
+const thirdParty = { agentPin: '3'.repeat(64) + '.0', pubkey: pub3, address: wire.deriveAddress(pub3) };
+probe('payment to != offer provider (full ctx)', rebuild('payment', mutate('payment', p => { p.to = thirdParty; }), h => h.writeUInt32BE(wire.targetId(pub3).readUInt32BE(0), 1)), 'role', { context: fullCtx, now: NOW });
+probe('payment amount != price', rebuild('payment', mutate('payment', p => { p.body.amountSats = 2501; })), 'number', { context: fullCtx, now: NOW });
+// Roles reversed AND made structurally consistent (target = new recipient,
+// re-signed by the new sender) so the contextual §10.6 role rule is what fires.
+probe('deliver roles reversed', rebuild('deliver', mutate('deliver', p => { const t = p.from; p.from = p.to; p.to = t; }), h => h.writeUInt32BE(wire.targetId(decoded['provider-ad'].from.pubkey).readUInt32BE(0), 1), decoded['requester-ad'].from.pubkey), 'role', { context: fullCtx, now: NOW });
+probe('accept wrong thread', rebuild('accept', mutate('accept', p => { p.threadId = 'f'.repeat(32); })), 'thread', { context: fullCtx, now: NOW });
+probe('accept offerHash -> request (wrong action)', rebuild('accept', mutate('accept', p => { p.body.offerHash = decoded['request'].sha256; })), 'reference-action', { context: fullCtx, now: NOW });
+probe('ack thread mismatch', rebuild('ack', mutate('ack', p => { p.threadId = 'e'.repeat(32); })), 'thread', { context: fullCtx, now: NOW });
+const r0 = secp.bigIntTo32(0n), s0 = secp.bigIntTo32(0n);
 {
-  const b = Buffer.from(srcBytes('accept'));
-  const s = secp.bytesToBigInt(b.subarray(53, 85));
-  secp.bigIntTo32(secp.N - s).copy(b, 53);
-  probe('high-s (n - s)', b, 'high-s');
+  const b = Buffer.from(srcBytes('accept')); r0.copy(b, 21); s0.copy(b, 53);
+  probe('r=0,s=0 signature', b, 'signature');
 }
 {
-  const b = Buffer.from(srcBytes('accept'));
-  secp.bigIntTo32(secp.N).copy(b, 53);
+  const b = Buffer.from(srcBytes('accept')); secp.bigIntTo32(secp.N).copy(b, 21);
+  probe('r == n out of range', b, ['signature', 'high-s']);
+}
+{
+  const b = Buffer.from(srcBytes('accept')); secp.bigIntTo32(secp.N).copy(b, 53);
   probe('s == n out of range', b, ['signature', 'high-s']);
 }
-// context-dependent reference probes
-probe('accept offerHash -> request (wrong action)', rebuild('accept', mutate('accept', p => { p.body.offerHash = decoded['request'].sha256; })), 'reference-action', { context: fullCtx });
-probe('ack thread mismatch', rebuild('ack', mutate('ack', p => { p.threadId = 'e'.repeat(32); })), 'thread', { context: fullCtx });
+{
+  // high-s flip of a valid signature: s' = n - s (still verifies mathematically)
+  const src = srcBytes('accept');
+  const s = secp.bytesToBigInt(src.subarray(53, 85));
+  const b = Buffer.from(src); secp.bigIntTo32(secp.N - s).copy(b, 53);
+  probe('high-s flipped valid signature', b, 'high-s');
+}
+{
+  // sender pubkey not on curve (x = p-1 has no square root)
+  const bad = '02' + 'ff'.repeat(32);
+  const p = JSON.parse(canonStr('requester-ad'));
+  p.from.pubkey = bad; p.from.address = '1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH';
+  probe('sender pubkey off curve', rebuild('requester-ad', Buffer.from(jcs.jcsSerialize(p), 'utf8')), 'curve');
+}
+{
+  // address checksum corruption (valid length/charset)
+  const p = JSON.parse(canonStr('accept'));
+  const a = p.from.address;
+  p.from.address = a.slice(0, -1) + (a.slice(-1) === 'H' ? 'J' : 'H');
+  probe('address bad checksum', rebuild('accept', Buffer.from(jcs.jcsSerialize(p), 'utf8')), 'address');
+}
+{
+  // target mismatch: header target != derivation of recipient pubkey
+  const b = Buffer.from(srcBytes('accept'));
+  b.writeUInt32BE(0xdeadbeef, 1);
+  probe('target != recipient derivation', b, 'target');
+}
 
-// ------------------------------------------------------- E. determinism manifest
+// --- Q1R item 1: RECEIPT offer binding (false-accept regressions) ---
+probe('receipt offerHash all-zero (full ctx)', rebuild('receipt', mutate('receipt', p => { p.body.offerHash = '0'.repeat(64); })), 'reference-action', { context: fullCtx, now: NOW });
+probe('receipt offerHash all-zero (null ctx, binding is contextual)', rebuild('receipt', mutate('receipt', p => { p.body.offerHash = '0'.repeat(64); })), null);
+probe('receipt paymentId != delivery (full ctx)', rebuild('receipt', mutate('receipt', p => { p.body.paymentId = '5'.repeat(64) + '.0'; })), 'reference-action', { context: fullCtx, now: NOW });
+{
+  // Context where the DELIVER references a different (all-zero) offer: the
+  // receipt's own offerHash is valid, but delivery binding must still fail.
+  const deliverZero = wire.decodeEnvelope(rebuild('deliver', mutate('deliver', p => { p.body.offerHash = '0'.repeat(64); })), { context: null });
+  const ctxMut = wire.makeContext(Object.values(decoded).map(e => e.messageId === deliverZero.messageId ? deliverZero : e));
+  probe('receipt vs delivery bound to another offer', srcBytes('receipt'), 'reference-action', { context: ctxMut, now: NOW });
+}
+
+// --- Q1R item 2: structural freshness without a receiver clock ---
+probe('Expires == Created without now', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => hdr.writeUInt32BE(NOW, 11)), 'window', noClock);
+probe('ACCEPT window 901s without now', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => hdr.writeUInt32BE(NOW + 901, 11)), 'window', noClock);
+probe('ACCEPT window exactly 900s without now (boundary)', rebuild('accept', Buffer.from(canonBuf('accept')), hdr => hdr.writeUInt32BE(NOW + 900, 11)), null, noClock);
+probe('ADVERTISE window 604801s without now', rebuild('requester-ad', Buffer.from(canonBuf('requester-ad')), hdr => hdr.writeUInt32BE(hdr.readUInt32BE(7) + 604801, 11)), 'window', noClock);
+probe('ADVERTISE window exactly 604800s without now (boundary)', rebuild('requester-ad', Buffer.from(canonBuf('requester-ad')), hdr => hdr.writeUInt32BE(hdr.readUInt32BE(7) + 604800, 11)), null, noClock);
+
+// --- Q1R item 3: PAYMENT sequencing (§9 rule 4) ---
+probe('payment without ACCEPT/ACCEPT_ACK in context', srcBytes('payment'), 'reference-action', { context: wire.makeContext(Object.values(decoded).filter(e => e.action !== 'ACCEPT' && e.action !== 'ACCEPT_ACK')), now: NOW });
+probe('payment with ACCEPT but no provider ACCEPT_ACK', srcBytes('payment'), 'reference-action', { context: wire.makeContext(Object.values(decoded).filter(e => e.action !== 'ACCEPT_ACK')), now: NOW });
+probe('payment full context accepted (control)', srcBytes('payment'), null, { context: fullCtx, now: NOW });
+probe('ack acceptHash -> offer (wrong action, full ctx)', rebuild('ack', mutate('ack', p => { p.body.acceptHash = decoded['offer'].sha256; })), 'reference-action', { context: fullCtx, now: NOW });
+
+// --- Q1R item 4: task expiry cap = REQUEST deliverBy + 86400 (§8.2) ---
+const DB = FIXTURES['request'].body.deliverBy;
+const CAP = DB + 86400;
+probe('deliver expires 1s beyond request cap', rebuild('deliver', Buffer.from(canonBuf('deliver')), hdr => { hdr.writeUInt32BE(DB + 1, 7); hdr.writeUInt32BE(CAP + 1, 11); }), 'window', { context: fullCtx });
+probe('deliver expires exactly at request cap (boundary)', rebuild('deliver', Buffer.from(canonBuf('deliver')), hdr => { hdr.writeUInt32BE(DB, 7); hdr.writeUInt32BE(CAP, 11); }), null, { context: fullCtx });
+probe('receipt expires beyond request cap', rebuild('receipt', Buffer.from(canonBuf('receipt')), hdr => { hdr.writeUInt32BE(DB + 1, 7); hdr.writeUInt32BE(DB + 1 + 86400, 11); }), 'window', { context: fullCtx });
+
+// --- Q1R item 5: provider advertisement freshness at REQUEST (§10.2) ---
+{
+  const expiredAd = wire.decodeEnvelope(rebuild('provider-ad', Buffer.from(canonBuf('provider-ad')), hdr => { hdr.writeUInt32BE(NOW - 100, 7); hdr.writeUInt32BE(NOW - 1, 11); }), { context: null });
+  const ctxExpiredAd = wire.makeContext(Object.values(decoded).map(e => e.messageId === expiredAd.messageId ? expiredAd : e));
+  // The REQUEST must reference the expired ad by its (new) envelope hash.
+  const reqRefExpired = rebuild('request', mutate('request', p => { p.body.providerAdvertisementHash = expiredAd.sha256; }));
+  probe('request with expired provider ad (now supplied)', reqRefExpired, 'expired', { context: ctxExpiredAd, now: NOW });
+  probe('request with expired provider ad (no clock; freshness needs now)', reqRefExpired, null, { context: ctxExpiredAd });
+  probe('request full context at NOW accepted (control)', srcBytes('request'), null, { context: fullCtx, now: NOW });
+}
+
+// --- Q1R item 6: outer REQUEST identityEvidence forbidden ---
+probe('REQUEST outer from.identityEvidence (decoder)', rebuild('request', mutate('request', p => { p.from.identityEvidence = 'V0lSRS1PTkxZ'; })), 'duplicate-proof');
+
+// --- Q1R item 7: identity PROOF local binding without context ---
+probe('identity proof agentPin != sender (null ctx)', rebuild('proof-identity', mutate('proof-identity', p => { p.body.agentPin = '0'.repeat(64) + '.0'; })), 'role');
+probe('identity proof agentPin != sender (full ctx)', rebuild('proof-identity', mutate('proof-identity', p => { p.body.agentPin = '0'.repeat(64) + '.0'; })), 'role', { context: fullCtx, now: NOW });
+probe('identity proof null ctx accepted (control)', srcBytes('proof-identity'), null);
+
+// --- Q1R item 8: strict endpoint / REJECT reason forms ---
+probe('endpoint trailing empty fragment', rebuild('provider-ad', mutate('provider-ad', p => { p.body.endpoint = 'https://provider.example/x#'; })), 'format');
+for (const [label, ch] of [['VT', '\u000b'], ['FF', '\u000c'], ['NEL', '\u0085'], ['U+2028', '\u2028'], ['U+2029', '\u2029']]) {
+  probe(`reject reason ${label} terminator`, rebuild('reject', mutate('reject', p => { p.body.reason = 'a' + ch + 'b'; })), 'text');
+}
+probe('reject reason tab accepted (single-line boundary)', rebuild('reject', mutate('reject', p => { p.body.reason = 'a\tb'; })), null);
+
+// --- Q1R item 10: long-address resource bound ---
+probe('address 65 chars rejected before BigInt', rebuild('accept', mutate('accept', p => { p.from.address = '1'.repeat(65); })), 'address');
+probe('address 64 chars bad payload (boundary)', rebuild('accept', mutate('accept', p => { p.from.address = '1'.repeat(64); })), 'address');
+
+// --- Q1R item 11: MIME grammar + body timestamp parity ---
+const MIME_FULL = "text/a!#$%&'*+.^_`|~-z";
+probe('mime full token grammar accepted (deliver)', rebuild('deliver', mutate('deliver', p => { p.body.mime = MIME_FULL; })), null);
+probe('mime full token grammar accepted (request)', rebuild('request', mutate('request', p => { p.body.deliveryMime = MIME_FULL; })), null);
+probe('mime invalid token char (', rebuild('deliver', mutate('deliver', p => { p.body.mime = 'text/a(b'; })), 'format');
+probe('mime exactly 100 bytes accepted (boundary)', rebuild('deliver', mutate('deliver', p => { p.body.mime = 'text/' + 'a'.repeat(95); })), null);
+probe('mime 101 bytes rejected', rebuild('deliver', mutate('deliver', p => { p.body.mime = 'text/' + 'a'.repeat(96); })), 'format');
+{
+  // Body timestamps are safe integers with chronology rules, NOT uint32:
+  // header stays uint32 by wire format; deliverBy may exceed 2^32-1.
+  const farCreated = 0xffffffff - 1000;
+  const farHdr = hdr => { hdr.writeUInt32BE(farCreated, 7); hdr.writeUInt32BE(farCreated + 600, 11); };
+  probe('request deliverBy beyond uint32 accepted', rebuild('request', mutate('request', p => { p.body.deliverBy = 4295000000; }), farHdr), null, noClock);
+  probe('request deliverBy = created+2592000 (boundary)', rebuild('request', mutate('request', p => { p.body.deliverBy = farCreated + 2592000; }), farHdr), null, noClock);
+  probe('request deliverBy = created+2592001 rejected', rebuild('request', mutate('request', p => { p.body.deliverBy = farCreated + 2592001; }), farHdr), 'window', noClock);
+  // acceptBefore is capped by Expires_At (uint32 header) per §10.4, so the
+  // beyond-uint32 body-timestamp parity probe uses payBy/deliverBy, which are
+  // safe-integer/chronology fields with no uint32 cap.
+  probe('offer payBy/deliverBy beyond uint32 accepted', rebuild('offer', mutate('offer', p => { p.body.terms.acceptBefore = farCreated + 300; p.body.terms.payBy = 4294967296; p.body.terms.deliverBy = 4294967297; }), farHdr), null, noClock);
+  probe('request deliverBy unsafe integer', rebuild('request', Buffer.from(canonStr('request').replace('"deliverBy":1795603600', '"deliverBy":9007199254740992'), 'utf8')), 'number');
+  probe('offer acceptBefore unsafe integer', rebuild('offer', Buffer.from(canonStr('offer').replace('"acceptBefore":1795600500', '"acceptBefore":9007199254740992'), 'utf8')), 'number');
+}
+probe('envelope nesting depth 65 rejected', rebuild('accept', Buffer.from(canonStr('accept').replace(/"body":\{[^{}]*\}/, '"body":' + chainText(65)), 'utf8')), 'noncanonical');
+
+// ---------------------------------------------------------------------------
+console.log('== E. encoder safety / consistency probes (item 9, 12) ==');
+function encProbe(label, fx, expectCode) {
+  probeCount++;
+  let err = null, out = null;
+  try { out = wire.encodeEnvelope(fx); } catch (e) { err = e; }
+  const good = expectCode === null ? err === null : err instanceof wire.WireError && err.code === expectCode;
+  ok(good, `encoder probe ${label}: expected ${expectCode}, got ${err ? err.code + ' ' + err.message : 'accept'}`);
+  manifest.probes.push({ label: 'encoder: ' + label, outcome: err ? 'reject' : 'accept', code: err ? err.code : null, expected: expectCode });
+  return out;
+}
+const encFx = name => ({ ...structuredClone(FIXTURES[name]), privateKey: keyByPub[FIXTURES[name].from.pubkey] });
+{
+  const fx = encFx('payment'); fx.body.vout = -0;
+  encProbe('negative zero rejected before signing', fx, 'number');
+}
+{
+  // Lone surrogate in a field that reaches JCS (REJECT reason has no prior
+  // charset regex): the serializer must reject before signing.
+  const fx = encFx('reject'); fx.body.reason = 'a\uD800b';
+  encProbe('lone surrogate rejected before signing', fx, 'noncanonical');
+}
+{
+  const fx = encFx('request'); fx.from.identityEvidence = 'V0lSRS1PTkxZ';
+  encProbe('REQUEST outer identityEvidence rejected', fx, 'duplicate-proof');
+}
+{
+  const fx = encFx('accept'); fx.privateKey = k2; // provider key, requester from
+  encProbe('wrong signer key (pubkey mismatch)', fx, 'signature');
+}
+{
+  const fx = encFx('accept'); fx.privateKey = '0'.repeat(64);
+  encProbe('zero private key rejected', fx, 'signature');
+}
+{
+  const fx = encFx('accept'); fx.privateKey = secp.N.toString(16).padStart(64, '0');
+  encProbe('private key == n rejected', fx, 'signature');
+}
+{
+  const fx = encFx('accept'); fx.expiresAt = fx.createdAt;
+  encProbe('expires == created rejected at encode', fx, 'window');
+}
+{
+  const fx = encFx('accept'); fx.expiresAt = fx.createdAt + 901;
+  encProbe('ACCEPT window 901s rejected at encode', fx, 'window');
+}
+{
+  const fx = encFx('deliver'); fx.body.content = '🚀';
+  const out = encProbe('astral content encodes and round-trips', fx, null);
+  if (out) {
+    const back = wire.decodeEnvelope(out.bytes, { context: null });
+    ok(back.body.content === '🚀', 'encoder astral roundtrip content preserved');
+  }
+}
+{
+  const out = encProbe('correct key reproduces golden accept', encFx('accept'), null);
+  if (out) ok(out.bytes.equals(srcBytes('accept')), 'encoder positive control byte-exact');
+}
+
+// ---------------------------------------------------------------------------
 const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 0));
 fs.writeFileSync(path.join(__dirname, 'manifest.json'), manifestBytes);
 const manifestHash = secp.sha256(manifestBytes).toString('hex');
-
-section('SUMMARY');
+console.log('');
 console.log(`positives reproduced byte-exact: ${manifest.positives.length}/12`);
 console.log(`negatives rejected: ${negRejected}/33 (code-category match ${negCodeMatch}/33)`);
 console.log(`edge probes: ${probeCount}`);
 console.log(`assertions passed: ${pass}, failed: ${failed}`);
 console.log(`manifest sha256: ${manifestHash}`);
-if (failed > 0) {
-  console.error('FAILURES:\n' + failures.map(f => '  - ' + f).join('\n'));
-  process.exit(1);
-}
+if (failed > 0) { console.log('FAILURES PRESENT'); process.exit(1); }
 console.log('ALL PASS');
