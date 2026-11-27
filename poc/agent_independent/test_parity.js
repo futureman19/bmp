@@ -61,9 +61,22 @@ const msg = Buffer.from('BMP-0005 deterministic signing probe');
 const s1 = secp.signDeterministic(k1, msg);
 const s1again = secp.signDeterministic(k1, msg);
 ok(s1.equals(s1again), 'RFC6979 determinism (same bytes twice)');
-ok(secp.isLowS(s1.subarray(32)), 'signature low-s');
+ok(secp.isLowS(s1), 'signature low-s (full 64-byte r||s)');
 ok(secp.verifySignature(secp.derivePubkey(k1), msg, s1), 'self-verify signature');
 ok(secp.opensslVerify(secp.derivePubkey(k1), msg, s1), 'OpenSSL verifies our RFC6979 signature');
+// --- Q2R item 6: low-S predicate is length-strict and non-vacuous ---
+{
+  const lowThrows = fn => { try { fn(); return false; } catch (_) { return true; } };
+  ok(lowThrows(() => secp.isLowS(s1.subarray(32))), 'item6: 32-byte input rejected (not vacuously low)');
+  ok(lowThrows(() => secp.isLowS(s1.subarray(0, 63))), 'item6: 63-byte input rejected');
+  ok(lowThrows(() => secp.isLowS(Buffer.concat([s1, Buffer.from([0])]))), 'item6: 65-byte input rejected');
+  ok(lowThrows(() => secp.isLowS(Buffer.alloc(0))), 'item6: empty input rejected');
+  const lowKat = Buffer.concat([Buffer.alloc(32, 0xab), secp.bigIntTo32(1n)]);
+  ok(secp.isLowS(lowKat) === true, 'item6: KAT s=1 low-S accepted');
+  const highKat = Buffer.concat([Buffer.alloc(32, 0xab), secp.bigIntTo32(secp.N - 1n)]);
+  ok(secp.isLowS(highKat) === false, 'item6: KAT s=N-1 high-S rejected');
+  ok(secp.isLowS(s1) === true, 'item6: real RFC6979 signature is low-S');
+}
 const osslSig = secp.opensslSignRandomK(k2, msg);
 ok(secp.verifySignature(secp.derivePubkey(k2), msg, osslSig), 'we verify OpenSSL random-k signature');
 ok(!secp.verifySignature(secp.derivePubkey(k2), Buffer.from('tampered'), osslSig), 'tampered message rejected');
@@ -157,16 +170,18 @@ for (const c of posCases) {
     `${c.name}: literal semantic fixture equals decoded semantics`);
   // Semantic reproduction: encode from the LITERAL fixture inputs only.
   const encSem = wire.encodeEnvelope({ ...structuredClone(sem), privateKey: keyByPub[sem.from.pubkey] });
-  ok(encSem.bytes.equals(buf), `${c.name}: semantic fixture re-encode byte-exact`);
+  const semByteExact = encSem.bytes.equals(buf);
+  ok(semByteExact, `${c.name}: semantic fixture re-encode byte-exact`);
   ok(encSem.sha256 === c.sha256, `${c.name}: semantic fixture re-encode sha256 match`);
   ok(encSem.signatureHex === d.signatureHex, `${c.name}: semantic fixture re-encode signature byte-exact`);
   // Decode->encode roundtrip (distinct claim: re-encode of decoder output).
   const encRt = wire.encodeEnvelope({ action: d.action, createdAt: d.createdAt, expiresAt: d.expiresAt, messageId: d.messageId, threadId: d.threadId, from: d.from, to: d.to, body: d.body, privateKey: keyByPub[d.from.pubkey] });
-  ok(encRt.bytes.equals(buf), `${c.name}: decode->encode roundtrip byte-exact`);
-  manifestPushPositive(c, encSem);
+  const rtByteExact = encRt.bytes.equals(buf);
+  ok(rtByteExact, `${c.name}: decode->encode roundtrip byte-exact`);
+  manifestPushPositive(c, encSem, semByteExact, rtByteExact);
 }
-function manifestPushPositive(c, enc) {
-  manifest.positives.push({ name: c.name, action: c.action, messageId: c.messageId, sha256: enc.sha256, hex: enc.bytes.toString('hex'), semanticFixtureReproduced: true, decodeEncodeRoundtrip: true });
+function manifestPushPositive(c, enc, semReproduced, rtRoundtrip) {
+  manifest.positives.push({ name: c.name, action: c.action, messageId: c.messageId, sha256: enc.sha256, hex: enc.bytes.toString('hex'), semanticFixtureReproduced: semReproduced, decodeEncodeRoundtrip: rtRoundtrip });
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +458,10 @@ const encFx = name => ({ ...structuredClone(FIXTURES[name]), privateKey: keyByPu
   encProbe('REQUEST outer identityEvidence rejected', fx, 'duplicate-proof');
 }
 {
+  const fx = encFx('proof-identity'); fx.from.identityEvidence = 'V0lSRS1PTkxZ';
+  encProbe('identity PROOF outer identityEvidence rejected at encode', fx, 'duplicate-proof');
+}
+{
   const fx = encFx('accept'); fx.privateKey = k2; // provider key, requester from
   encProbe('wrong signer key (pubkey mismatch)', fx, 'signature');
 }
@@ -475,7 +494,77 @@ const encFx = name => ({ ...structuredClone(FIXTURES[name]), privateKey: keyByPu
   if (out) ok(out.bytes.equals(srcBytes('accept')), 'encoder positive control byte-exact');
 }
 
+// --- Q2R item 1: DELIVER/RECEIPT bind the PAYMENT (offer/thread/roles/ACCEPT+ACK/amount) ---
+const ctxPay = mut => wire.makeContext(Object.values(decoded).map(d => d.action === 'PAYMENT' ? wire.decodeEnvelope(rebuild('payment', mut), { context: null }) : d));
+probe('item1: DELIVER payment bound to different offer', rebuild('deliver', canonBuf('deliver')), 'reference-action', { context: ctxPay(mutate('payment', p => { p.body.offerHash = '0'.repeat(64); })) });
+keyByPub[pub3] = k3; // third principal key for role-mismatch re-signing
+probe('item1: DELIVER payment sender != requester', rebuild('deliver', canonBuf('deliver')), 'role', { context: wire.makeContext(Object.values(decoded).map(d => d.action === 'PAYMENT' ? wire.decodeEnvelope(rebuild('payment', mutate('payment', p => { p.from = thirdParty; }), null, pub3), { context: null }) : d)) });
+probe('item1: DELIVER payment thread mismatch', rebuild('deliver', canonBuf('deliver')), 'thread', { context: ctxPay(mutate('payment', p => { p.threadId = 'f'.repeat(32); })) });
+probe('item1: DELIVER payment amount != offer price', rebuild('deliver', canonBuf('deliver')), 'number', { context: ctxPay(mutate('payment', p => { p.body.amountSats = 2501; })) });
+probe('item1: RECEIPT payment amount != offer price', rebuild('receipt', canonBuf('receipt')), 'number', { context: ctxPay(mutate('payment', p => { p.body.amountSats = 2501; })) });
+{
+  const noAck = wire.makeContext(Object.values(decoded).filter(d => d.action !== 'ACCEPT_ACK'));
+  probe('item1: DELIVER payment without provider ACCEPT_ACK', rebuild('deliver', canonBuf('deliver')), 'reference-action', { context: noAck });
+  probe('item1: RECEIPT payment without provider ACCEPT_ACK', rebuild('receipt', canonBuf('receipt')), 'reference-action', { context: noAck });
+}
+probe('item1 control: DELIVER full context accepted', rebuild('deliver', canonBuf('deliver')), null, { context: fullCtx });
+probe('item1 control: RECEIPT full context accepted', rebuild('receipt', canonBuf('receipt')), null, { context: fullCtx });
+
+// --- Q2R item 2: REQUEST-time provider advertisement future skew ---
+{
+  const futureAd = wire.decodeEnvelope(rebuild('provider-ad', canonBuf('provider-ad'), hdr => { hdr.writeUInt32BE(NOW + 301, 7); hdr.writeUInt32BE(NOW + 301 + 604800, 11); }), { context: null });
+  const ctxFutureAd = wire.makeContext(Object.values(decoded).map(d => d.action === 'ADVERTISE' && d.from.pubkey === decoded['provider-ad'].from.pubkey ? futureAd : d));
+  const reqRefFuture = rebuild('request', mutate('request', p => { p.body.providerAdvertisementHash = futureAd.sha256; }));
+  probe('item2: REQUEST references future-skewed provider ad', reqRefFuture, 'future', { context: ctxFutureAd, now: NOW });
+  probe('item2 control: REQUEST valid provider ad accepted', rebuild('request', canonBuf('request')), null, { context: fullCtx, now: NOW });
+}
+
+// --- Q2R item 3: replay-identity-aware context; conflict on differing stored bytes ---
+{
+  const d1 = decoded['deliver'];
+  const d2 = wire.decodeEnvelope(rebuild('deliver', mutate('deliver', p => { p.body.content = 'conflicting delivery content'; })), { context: null });
+  let conflict = false;
+  try { wire.makeContext([d1, d2]); } catch (e) { conflict = e instanceof wire.WireError && e.code === 'conflict'; }
+  ok(conflict, 'item3: conflicting stored bytes for one replay identity rejected');
+  let idem = true;
+  try { wire.makeContext([d1, d1]); } catch (_) { idem = false; }
+  ok(idem, 'item3: same-byte idempotent retry preserved');
+  const acc = decoded['accept'];
+  const ackReuse = wire.decodeEnvelope(rebuild('ack', mutate('ack', p => { p.messageId = acc.messageId; }), hdr => { Buffer.from(acc.messageId, 'hex').copy(hdr, 15, 0, 4); }), { context: null });
+  let crossAction = true;
+  try { wire.makeContext([acc, ackReuse]); } catch (_) { crossAction = false; }
+  ok(crossAction, 'item3: cross-action messageId reuse distinguished');
+  const delivThread = wire.decodeEnvelope(rebuild('deliver', mutate('deliver', p => { p.threadId = 'f'.repeat(32); })), { context: null });
+  let crossThread = true;
+  try { wire.makeContext([d1, delivThread]); } catch (_) { crossThread = false; }
+  ok(crossThread, 'item3: cross-thread messageId reuse distinguished');
+}
+
+// --- Q2R item 4: identity PROOF must not carry from.identityEvidence ---
+probe('item4: identity PROOF with from.identityEvidence rejected', rebuild('proof-identity', mutate('proof-identity', p => { p.from.identityEvidence = 'V0lSRS1PTkxZ'; })), 'duplicate-proof');
+probe('item4 control: identity PROOF without evidence accepted', rebuild('proof-identity', canonBuf('proof-identity')), null);
+probe('item4 control: payment PROOF unchanged', rebuild('proof-payment', canonBuf('proof-payment')), null);
+
+// --- Q2R item 5: endpoint exact-string validation (controls/userinfo/fragment) ---
+const epProbe = (label, ep, code) => probe(label, rebuild('provider-ad', mutate('provider-ad', p => { p.body.endpoint = ep; })), code);
+epProbe('item5: endpoint leading space', ' https://provider.example/bmp-agent/1', 'format');
+epProbe('item5: endpoint trailing space', 'https://provider.example/bmp-agent/1 ', 'format');
+epProbe('item5: endpoint embedded tab', 'https://provider.example/\tbmp-agent/1', 'format');
+epProbe('item5: endpoint embedded newline', 'https://provider.example/\nbmp-agent/1', 'format');
+epProbe('item5: endpoint C0 control', 'https://provider.example/\u0001x', 'format');
+epProbe('item5: endpoint DEL control', 'https://provider.example/\u007fx', 'format');
+epProbe('item5: endpoint empty userinfo @host', 'https://@provider.example/bmp-agent/1', 'format');
+epProbe('item5: endpoint userinfo', 'https://user:pass@provider.example/bmp-agent/1', 'format');
+epProbe('item5: endpoint fragment', 'https://provider.example/bmp-agent/1#frag', 'format');
+epProbe('item5: endpoint http scheme', 'http://provider.example/bmp-agent/1', 'format');
+epProbe('item5 control: clean https endpoint accepted', 'https://provider.example/bmp-agent/1', null);
+epProbe('item5 control: https with query accepted', 'https://provider.example/bmp-agent/1?q=1', null);
+
 // ---------------------------------------------------------------------------
+manifest.assertions = { passed: pass, failed };
+manifest.edgeProbes = probeCount;
+manifest.negativesRejected = negRejected;
+manifest.negativesCodeMatch = negCodeMatch;
 const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 0));
 fs.writeFileSync(path.join(__dirname, 'manifest.json'), manifestBytes);
 const manifestHash = secp.sha256(manifestBytes).toString('hex');

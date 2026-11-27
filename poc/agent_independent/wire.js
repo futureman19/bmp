@@ -77,6 +77,22 @@ function checkBase64(s, path) {
 function checkMime(s, path) {
   if (typeof s !== 'string' || !RE_MIME.test(s) || utf8Len(s) > 100) fail('format', path, 'bad mime');
 }
+// §10.1 endpoint: validate the EXACT signed string. The WHATWG URL parser
+// silently strips C0 controls/space and tolerates empty userinfo (`@host`), so
+// reject those on the raw string BEFORE parsing. We do not compare href to the
+// input (that would normalize a valid bare-root URL by adding a trailing `/`).
+function checkEndpoint(s, path) {
+  checkStr(s, path);
+  if (/[\u0000-\u0020\u007f]/.test(s)) fail('format', path, 'endpoint control/whitespace forbidden');
+  let u;
+  try { u = new URL(s); } catch (_) { fail('format', path, 'invalid URL'); }
+  if (u.protocol !== 'https:') fail('format', path, 'https required');
+  if (s.includes('#') || u.hash) fail('format', path, 'fragment forbidden');
+  const rest = s.slice(s.indexOf('://') + 3);
+  const sep = rest.search(/[/?#]/);
+  const authority = sep < 0 ? rest : rest.slice(0, sep);
+  if (authority.includes('@') || u.username || u.password) fail('format', path, 'userinfo forbidden');
+}
 function checkUintRange(v, lo, hi, path) {
   if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < lo || v > hi) {
     fail('number', path, `expected integer in [${lo},${hi}]`);
@@ -172,6 +188,28 @@ function validateIdentity(id, path, opts = {}) {
 function principalEq(a, b) {
   return a.agentPin === b.agentPin && a.pubkey === b.pubkey && a.address === b.address;
 }
+// §9 rules 5/6: DELIVER and RECEIPT must bind to the SAME PAYMENT, which must
+// itself bind the offer, both principals, the ACCEPT/ACCEPT_ACK pair and the
+// offered amount. Shared so the two actions cannot drift apart.
+function bindPayment(ctx, env, body, offer, path) {
+  const pay = ctx.findByPaymentId(body.paymentId);
+  if (!pay || pay.action !== 'PAYMENT') fail('reference-action', path + '.paymentId', 'payment not in context');
+  if (pay.body.offerHash !== body.offerHash) fail('reference-action', path + '.paymentId', 'payment bound to a different offer');
+  if (pay.threadId !== env.threadId) fail('thread', '$.threadId', 'payment thread mismatch');
+  // PAYMENT flows requester -> provider (offer.to -> offer.from).
+  if (!principalEq(pay.from, offer.to) || !principalEq(pay.to, offer.from)) fail('role', path + '.paymentId', 'payment roles do not match offer');
+  if (pay.body.amountSats !== offer.body.terms.priceSats) fail('number', path + '.paymentId', 'payment amount != offer price');
+  // §9 rule 4: the payment must carry the stored ACCEPT + provider ACCEPT_ACK pair.
+  const accepts = ctx.findByAction('ACCEPT').filter(a =>
+    a.body.offerHash === body.offerHash && a.threadId === env.threadId &&
+    principalEq(a.from, pay.from) && principalEq(a.to, pay.to));
+  if (accepts.length === 0) fail('reference-action', path + '.paymentId', 'no matching ACCEPT for payment');
+  const acknowledged = accepts.some(a => ctx.findByAction('ACCEPT_ACK').some(k =>
+    k.body.offerHash === body.offerHash && k.body.acceptHash === a.sha256 &&
+    k.threadId === env.threadId && principalEq(k.from, pay.to) && principalEq(k.to, pay.from)));
+  if (!acknowledged) fail('reference-action', path + '.paymentId', 'no provider ACCEPT_ACK for payment');
+  return pay;
+}
 
 // ---------- body schemas (§§6,9,10) ----------
 function validateServiceEntry(e, i, path) {
@@ -193,12 +231,7 @@ function validateBody(action, body, env, opts) {
     case 'ADVERTISE': {
       checkKeys(body, ['endpoint', 'services'], path);
       requireKeys(body, ['endpoint', 'services'], path);
-      checkStr(body.endpoint, path + '.endpoint');
-      let u;
-      try { u = new URL(body.endpoint); } catch { fail('format', path + '.endpoint', 'bad URL'); }
-      if (u.protocol !== 'https:' || u.username || u.password || u.hash || body.endpoint.includes('#') || !u.hostname) {
-        fail('format', path + '.endpoint', 'must be absolute https without credentials/fragment delimiter');
-      }
+      checkEndpoint(body.endpoint, path + '.endpoint');
       if (!Array.isArray(body.services) || body.services.length > 16) fail('number', path + '.services', '0..16 services');
       const kinds = new Set();
       body.services.forEach((e, i) => {
@@ -241,6 +274,9 @@ function validateBody(action, body, env, opts) {
         // receiver's time when a receiver clock is supplied.
         if (typeof opts.now === 'number' && provAd.expiresAt < opts.now) {
           fail('expired', path + '.providerAdvertisementHash', 'provider advertisement expired at receiver time');
+        }
+        if (typeof opts.now === 'number' && provAd.createdAt > opts.now + MAX_FUTURE_SKEW) {
+          fail('future', path + '.providerAdvertisementHash', 'provider advertisement too far in future at REQUEST');
         }
         const entry = provAd.body.services.find(e => e.kind === body.service);
         if (!entry) fail('reference-action', path + '.service', 'service not advertised');
@@ -356,8 +392,7 @@ function validateBody(action, body, env, opts) {
         if (body.mime !== offer.body.terms.deliveryMime) fail('format', path + '.mime', 'mime != accepted offer mime');
         if (env.threadId !== offer.threadId) fail('thread', '$.threadId', 'deliver thread mismatch');
         if (!principalEq(env.from, offer.from) || !principalEq(env.to, offer.to)) fail('role', '$.from', 'deliver roles reversed');
-        const pay = ctx.findByPaymentId(body.paymentId);
-        if (!pay || pay.body.offerHash !== body.offerHash) fail('reference-action', path + '.paymentId', 'payment not in context');
+        bindPayment(ctx, env, body, offer, path);
       }
       break;
     }
@@ -380,11 +415,7 @@ function validateBody(action, body, env, opts) {
         if (del.body.paymentId !== body.paymentId) fail('reference-action', path + '.paymentId', 'receipt paymentId != delivery');
         if (env.threadId !== del.threadId) fail('thread', '$.threadId', 'receipt thread mismatch');
         if (!principalEq(env.from, del.to) || !principalEq(env.to, del.from)) fail('role', '$.from', 'receipt roles reversed');
-        const pay = ctx.findByPaymentId(body.paymentId);
-        if (!pay || pay.action !== 'PAYMENT' || pay.body.offerHash !== body.offerHash ||
-            pay.threadId !== env.threadId || !principalEq(pay.from, env.from) || !principalEq(pay.to, env.to)) {
-          fail('reference-action', path + '.paymentId', 'payment not bound to this offer/thread');
-        }
+        bindPayment(ctx, env, body, offer, path);
       }
       break;
     }
@@ -447,12 +478,21 @@ function makeContext(decodedList) {
   const payments = [];
   for (const d of decodedList) {
     bySha.set(d.sha256, d);
-    byMsg.set(d.messageId, d);
+    // §5.3 replay identity is action-, thread- and outpoint-aware: ADVERTISE
+    // replays per sender principal, PAYMENT per outpoint, others per messageId.
+    // Keying by messageId alone lets one id poison another action's lookup.
+    const replayKey = d.action === 'ADVERTISE' ? d.from.pubkey
+      : d.action === 'PAYMENT' ? d.body.txid + ':' + d.body.vout
+      : d.messageId;
+    const k = d.action + '|' + d.threadId + '|' + replayKey;
+    const prev = byMsg.get(k);
+    if (prev !== undefined && prev.sha256 !== d.sha256) fail('conflict', 'context', 'conflicting envelopes for one replay identity');
+    byMsg.set(k, d);
     if (d.action === 'PAYMENT') payments.push(d);
   }
   return {
     findBySha: h => bySha.get(h) || null,
-    findByMsg: m => byMsg.get(m) || null,
+    findByMsg: (action, threadId, replayKey) => byMsg.get(action + '|' + threadId + '|' + replayKey) || null,
     findByPaymentId: pid => payments.find(p => (p.body.txid + '.' + p.body.vout) === pid) || null,
     findByAction: a => decodedList.filter(d => d.action === a),
   };
@@ -499,7 +539,11 @@ function decodeEnvelope(buf, opts = {}) {
   const msgIdBytes = secp.hexToBytes(payload.messageId);
   if (!nonce.equals(msgIdBytes.subarray(0, 4))) fail('nonce', '$.nonce', 'nonce != first 4 bytes of messageId');
 
-  validateIdentity(payload.from, '$.from', action === 'ADVERTISE' ? { requireEvidence: true } : action === 'REQUEST' ? { forbidEvidence: true } : {});
+  const fromOpts = action === 'ADVERTISE' ? { requireEvidence: true }
+    : action === 'REQUEST' ? { forbidEvidence: true }
+    : (action === 'PROOF' && payload.body && payload.body.proofKind === 'identity') ? { forbidEvidence: true }
+    : {};
+  validateIdentity(payload.from, '$.from', fromOpts);
   validateIdentity(payload.to, '$.to', action === 'ADVERTISE' ? { forbidEvidence: true } : {});
 
   // target binding (§5.5)
@@ -551,7 +595,7 @@ function decodeEnvelope(buf, opts = {}) {
   // §8.2: later task envelopes expire no later than the originating REQUEST's
   // deliverBy + 86400 (enforced when transcript context is supplied).
   if (opts.context && action !== 'ADVERTISE' && action !== 'REQUEST') {
-    const req = opts.context.findByMsg(env.threadId);
+    const req = opts.context.findByAction('REQUEST').find(r => r.messageId === env.threadId) || null;
     if (req && req.action === 'REQUEST' && env.expiresAt > req.body.deliverBy + 86400) {
       fail('window', '$.expiresAt', 'task expiry beyond request deliverBy + 86400');
     }
@@ -572,7 +616,11 @@ function encodeEnvelope(fx) {
   if (fx.expiresAt - fx.createdAt > WINDOWS[fx.action]) fail('window', '$.expiresAt', 'validity window exceeded');
   checkHex32(fx.messageId, '$.messageId');
   checkHex32(fx.threadId, '$.threadId');
-  validateIdentity(fx.from, '$.from', fx.action === 'ADVERTISE' ? { requireEvidence: true } : (fx.action === 'REQUEST' ? { forbidEvidence: true } : {}));
+  const encFromOpts = fx.action === 'ADVERTISE' ? { requireEvidence: true }
+    : fx.action === 'REQUEST' ? { forbidEvidence: true }
+    : (fx.action === 'PROOF' && fx.body && fx.body.proofKind === 'identity') ? { forbidEvidence: true }
+    : {};
+  validateIdentity(fx.from, '$.from', encFromOpts);
   validateIdentity(fx.to, '$.to', fx.action === 'ADVERTISE' ? { forbidEvidence: true } : {});
   // §5.1: the signing key must derive the declared sender pubkey.
   let derivedPub;

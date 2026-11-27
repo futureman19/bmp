@@ -1,11 +1,13 @@
-# BMP-0005 independent Node wire implementation (Q1 + Q1R corrections)
+# BMP-0005 independent Node wire implementation (Q1 + Q1R + Q2R corrections)
 
 A second, independent implementation of the BMP-0005 R3 agent-interaction
 wire format, written from the normative specification and the published
 golden vectors only. It exists to prove **byte-exact wire/schema parity**
-with the C1 reference vectors — nothing more. Q1R applies the corrections
-from two controller probes and two independent reviews (false accepts and
-evidence gaps found despite the original 165 assertions passing).
+with the C1 reference vectors — nothing more. Q1R applied the corrections
+from two controller probes and two independent reviews. Q2R applies the
+seven protocol-binding corrections from the fresh controller protocol
+review (five false accepts reproduced by independent controller probes;
+crypto/JCS review passed).
 
 ## Scope statement (read this first)
 
@@ -46,9 +48,9 @@ are executed only as regression gates, not used as implementation guidance.
 |---|---|
 | `secp256k1.js` | Field/group arithmetic, pubkey derivation, RFC 6979 deterministic low-s ECDSA (`r‖s`, 64 bytes), verifier, OpenSSL cross-checks via `crypto` |
 | `jcs.js` | Strict RFC 8785 (JCS) canonicalization + canonical-only JSON parser (duplicate keys, noncanonical numbers/escapes/Unicode, negative zero, lone surrogates, depth bound all rejected) |
-| `wire.js` | 85-byte-prefix version `0x02` envelope encode/decode: target derivation, closed action schemas, base64/pin/outpoint rules, unconditional structural freshness, role/thread/reference binding, task expiry cap, provider-ad freshness, embedded requester advertisement, transcript context checks |
+| `wire.js` | 85-byte-prefix version `0x02` envelope encode/decode: target derivation, closed action schemas, base64/pin/outpoint rules, unconditional structural freshness, role/thread/reference binding, task expiry cap, provider-ad freshness, embedded requester advertisement, transcript context checks; Q2R adds shared DELIVER/RECEIPT PAYMENT binding (thread/roles/offer/ACCEPT+ACK/amount), REQUEST-time provider-ad future-skew rejection, replay-identity-aware messageId resolution with stored-conflict detection, identity-PROOF `from.identityEvidence` prohibition (decode+encode), and exact-string endpoint pre-validation |
 | `fixtures_semantic.json` | Literal semantic inputs for all 12 published envelopes (recorded once from the published bytes); the encoder reproduces every golden envelope from these literals, never from decoder output |
-| `test_parity.js` | Known-answer crypto tests → semantic-fixture positive reproduction → negative replay (hard-fail category match) → 96 decode/edge probes + 10 encoder probes → deterministic manifest |
+| `test_parity.js` | Known-answer crypto tests → semantic-fixture positive reproduction → negative replay (hard-fail category match) → 122 decode/edge probes + 11 encoder probes → deterministic manifest |
 | `manifest.json` | Generated deterministic evidence manifest (rewritten identically on every run; includes per-negative outcomes/codes and per-probe expectations) |
 
 ## Commands
@@ -65,8 +67,8 @@ Expected tail:
 ```text
 positives reproduced byte-exact: 12/12
 negatives rejected: 33/33 (code-category match 33/33)
-edge probes: 106
-assertions passed: 345, failed: 0
+edge probes: 133
+assertions passed: 383, failed: 0
 ALL PASS
 ```
 
@@ -119,7 +121,7 @@ the system interpreter that owns the installed requirements,
    error code category; a category mismatch **fails the suite** (not a
    printed note), and each negative's outcome/code is recorded in the
    manifest. Both mutation models (splice and append-zeroes) are exercised.
-5. **Decode/edge probes (96):** the original battery (canonical JSON,
+5. **Decode/edge probes (122):** the original battery (canonical JSON,
    curve points, addresses, pins, base64, version/action/length, closed
    schemas, high-s, target/reference binding) plus validly re-signed
    false-accept regressions for every Q1R protocol correction, with
@@ -140,25 +142,43 @@ the system interpreter that owns the installed requirements,
      accepted, unsafe integers rejected), header timestamps stay uint32
      (item 11);
    - JSON nesting depth 65 rejection at envelope level.
-6. **Encoder probes (10):** negative zero and lone surrogates rejected
+   Q2R protocol-binding regressions (validly re-signed, with null/full-context
+   variants and valid controls; each false-accepts on the Q1R base code):
+   - DELIVER/RECEIPT bound to the referenced PAYMENT's thread, sender/recipient
+     roles, offer hash, amount, and the provider ACCEPT+ACCEPT_ACK pair (item 1);
+   - REQUEST rejects a referenced provider advertisement created beyond the
+     300s future-skew allowance when `now` is supplied (item 2);
+   - context rejects two stored envelopes sharing one replay identity
+     (action+messageId+role) with differing bytes, and distinguishes
+     cross-action / cross-thread messageIds (item 3);
+   - identity PROOF forbids outer `from.identityEvidence` at decode and encode (item 4);
+   - endpoint exact-string pre-validation rejects leading/trailing whitespace,
+     embedded tab/newline, C0/DEL controls, and empty userinfo `@host` (item 5);
+   - `isLowS` requires a 64-byte r‖s buffer (32/63/65/empty rejected, not
+     vacuously low) plus a full-signature low-s KAT (item 6).
+6. **Encoder probes (11):** negative zero and lone surrogates rejected
    before signing, outer REQUEST evidence rejected, wrong signer key
    (pubkey mismatch) rejected instead of emitting an invalid envelope,
    zero/out-of-range private keys rejected, structural freshness enforced
-   at encode time, astral content round-trip, and a byte-exact positive
-   control (item 9, 12).
+   at encode time, astral content round-trip, identity PROOF outer evidence
+   rejected at encode (Q2R item 4), and a byte-exact positive control (item 9, 12).
 
 ## Verification status at commit
 
-- Independent suite: 345 assertions, 0 failures; 12/12 positives
+- Independent suite: 383 assertions, 0 failures; 12/12 positives
   byte-exact from literal semantic fixtures; 33/33 negatives rejected with
-  exact category match; 106 probes (96 decode/edge + 10 encoder).
+  exact category match; 133 probes (122 decode/edge + 11 encoder).
+- Q2R non-vacuity gate: running the Q2R regressions against the Q1R base
+  wire.js/secp256k1.js reproduces 20 false accepts (item 1×6, item 2×1,
+  item 3×1, item 4×1, item 5×7, item 6×4); all are rejected by this commit.
 - Twice-run gate: stdout and manifest byte-identical
-  (stdout sha256 `c11103a7d6c5d838a22953d47ccc6be01c3daab1b3373bec142476ab7a9da5ca`,
-  manifest sha256 `9b09d57ffd90ff1ea4063d52c4071abafa81e9c50f22007d8e57304f9dc50507`).
+  (stdout sha256 `0052258cfd735ef1ef31df3981e8619320daccf15046169e92e15942ac1057d1`,
+  manifest sha256 `748b1e2f51ef69079883a86bf0e1e3f900a11de5fc4c07056439f646b9283d7a`).
 - `python -m pytest tests -q`: 198 passed.
 - `node agent/check_vectors.js` (C1 Node/OpenSSL): 12 envelopes passed.
 - `node js_tests/svctest_l2l3.js`: 27 passed, 0 failed.
 - `node js_tests/svctest_ble.js`: 26 passed, 0 failed.
 - `node js_tests/svctest_headers.js`: 3645 passed, 0 failed.
 - `node js_tests/svctest_review.js`: 16 passed, 0 failed.
-- `git diff --check 2f9cd4f..HEAD`: clean; diff limited to this directory.
+- `git diff --check 6e07100..HEAD`: clean; diff limited to this directory
+  (base 6e07100a68f233ffe30df6432c6e4c65356e6969, Q1R).

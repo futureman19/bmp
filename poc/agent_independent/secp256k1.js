@@ -196,6 +196,9 @@ function verifySignature(pubHex, msgBuf, sigBuf) {
 }
 
 function isLowS(sigBuf) {
+  if (!Buffer.isBuffer(sigBuf) || sigBuf.length !== 64) {
+    throw new Error('isLowS requires a 64-byte r||s signature');
+  }
   return bytesToBigInt(sigBuf.subarray(32, 64)) <= HALF_N;
 }
 
