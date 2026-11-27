@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "accept-ack-authorize",
+      "pair": [
+        "1f58b9145b24d108d7ac38887338b3ea",
+        "ecff1e278c4c5029abe5a0a06e66a1f9a2cd34110c7d39ec61a59b2280995c51",
+        "99e89fcdabe4c498924d0f9fc43e11bb6eaed98ef8670bbfa0a28690c03f89ed"
+      ],
+      "ackHash": "bff1aa03c3bc1ee93a10f24f0fa5bf4ed376d1fe64ead984f495d4966051f95a",
+      "paymentIds": [
+        "d6da2c9f9a44cdc4e49f1724273ec9e143dfe31a6174cbbf5cbf6f91ae9e1965.0",
+        "db54b2a22227d7da090353f0f9f5636a2e0cea17e5944848acd0fa010d3cd89c.0",
+        "49d5b2f3845993117aa389a30ceebf911a10adb56225e20b82eb6d9caf83d4ef.2"
+      ],
+      "steps": [
+        {
+          "action": "accept",
+          "now": 1795600000,
+          "expect": "ACCEPTED"
+        },
+        {
+          "action": "ack",
+          "now": 1795600000,
+          "expect": "ACKNOWLEDGED"
+        },
+        {
+          "action": "authorize",
+          "now": 1795600000,
+          "expect": "AUTHORIZED"
+        }
+      ]
+    },
+    {
+      "name": "assign-and-retry",
+      "pair": [
+        "1f58b9145b24d108d7ac38887338b3ea",
+        "ecff1e278c4c5029abe5a0a06e66a1f9a2cd34110c7d39ec61a59b2280995c51",
+        "99e89fcdabe4c498924d0f9fc43e11bb6eaed98ef8670bbfa0a28690c03f89ed"
+      ],
+      "ackHash": "bff1aa03c3bc1ee93a10f24f0fa5bf4ed376d1fe64ead984f495d4966051f95a",
+      "paymentIds": [
+        "d6da2c9f9a44cdc4e49f1724273ec9e143dfe31a6174cbbf5cbf6f91ae9e1965.0",
+        "db54b2a22227d7da090353f0f9f5636a2e0cea17e5944848acd0fa010d3cd89c.0",
+        "49d5b2f3845993117aa389a30ceebf911a10adb56225e20b82eb6d9caf83d4ef.2"
+      ],
+      "steps": [
+        {
+          "action": "accept",
+          "now": 1795600000,
+          "expect": "ACCEPTED"
+        },
+        {
+          "action": "ack",
+          "now": 1795600000,
+          "expect": "ACKNOWLEDGED"
+        },
+        {
+          "action": "assign:0",
+          "now": 1795600000,
+          "expect": "ASSIGNED"
+        },
+        {
+          "action": "assign:0",
+          "now": 1795610000,
+          "expect": "ASSIGNED"
+        }
+      ]
+    }
+  ]
+}
