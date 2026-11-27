@@ -5,9 +5,12 @@ from dataclasses import dataclass
 
 from agent.codec import decode
 from agent.links import check_links
+from agent_evidence.evaluator import evaluate, Result
+from agent_state import evidence
 from agent.values import WireError
 from agent_payment.shape import Agreement, ShapeError, verify
 from svcode import tx as btc
+from svcode.spv import HeaderStore
 
 
 class StateError(ValueError):
@@ -28,9 +31,13 @@ class Record:
     acknowledged_at: int | None
     payment_id: str | None
     raw: bytes | None
+    paid_at: int | None = None
+    evidence_revision: int = 0
 
     @property
     def state(self):
+        if self.paid_at is not None:
+            return 'PAID'
         if self.payment_id is not None:
             return 'ASSIGNED'
         return 'ACKNOWLEDGED' if self.ack is not None else 'ACCEPTED'
@@ -79,11 +86,21 @@ def unique_ids(msgs):
     require(len(keys) == len(msgs), 'conflict')
 
 
+def payment_terms(row, msgs):
+    terms = msgs[2].payload['body']['terms']
+    addr = btc.b58decode(terms['paymentAddress'])
+    agreement = Agreement(row.offer_hash, row.accept_hash, bytes.fromhex(msgs[1].payload['from']['pubkey']),
+                          b'\x76\xa9\x14' + addr[1:21] + b'\x88\xac', terms['priceSats'])
+    return agreement, terms
+
+
 class Store:
     def __init__(self, path):
         require(str(path) not in ('', ':memory:') and not str(path).startswith('file:'), 'not-durable')
         self._db = sqlite3.connect(str(path), isolation_level=None)
         try:
+            self._db.execute('PRAGMA recursive_triggers=ON')  # Also guard REPLACE deletes.
+            self._db.execute('PRAGMA foreign_keys=ON')
             self._db.execute('PRAGMA synchronous=FULL')
             with self._write():
                 version, = self._db.execute('PRAGMA user_version').fetchone()
@@ -91,9 +108,10 @@ class Store:
                     require(not self._db.execute('SELECT 1 FROM sqlite_master LIMIT 1').fetchone(), 'schema-version')
                     self._db.execute(SCHEMA)
                     self._db.execute('CREATE TABLE late_accepts(accept_hash TEXT NOT NULL PRIMARY KEY, first_arrival INTEGER NOT NULL)')
-                    self._db.execute('PRAGMA user_version=1')
-                else:
-                    require(version == 1, 'schema-version')
+                    version = 1
+                require(version in (1, 2), 'schema-version')
+                if version == 1:
+                    evidence.migrate(self._db)
         except BaseException:
             self.close()
             raise
@@ -168,6 +186,59 @@ class Store:
             self._db.execute('UPDATE agreements SET ack=?, acknowledged_at=? WHERE thread=?', (raw, now, thread))
             return self.get(thread)
 
+    def submit_evidence(self, thread, beef, *, headers, conflict_status, now):
+        require(type(beef) is bytes, 'invalid-evidence')
+        return self._evaluate(thread, beef, headers, conflict_status, now, delivery=False)
+
+    def authorize_delivery(self, thread, *, headers, conflict_status, now, beef=None):
+        require(beef is None or type(beef) is bytes, 'invalid-evidence')
+        return self._evaluate(thread, beef, headers, conflict_status, now, delivery=True)
+
+    def evidence_history(self, thread):
+        rows = self._db.execute('SELECT * FROM evidence_history WHERE thread=? ORDER BY revision', (thread,))
+        return [evidence.Evaluation.from_row(r) for r in rows]
+
+    def _evaluate(self, thread, beef, headers, conflict_status, now, *, delivery):
+        clock(now)
+        require(conflict_status in ('clear', 'unavailable', 'conflicted'), 'local-input')
+        with self._write():
+            row = self.get(thread)
+            require(row is not None and row.payment_id is not None, 'not-assigned')
+            _, msgs = self._ack_check(row, row.ack, None)
+            require(msgs[1].payload['threadId'] == thread, 'conflict')
+            agreement, terms = payment_terms(row, msgs)
+            prior = None
+            if row.evidence_revision:
+                previous = self._db.execute('SELECT record,beef FROM evidence_history WHERE thread=? AND revision=?',
+                                            (thread, row.evidence_revision)).fetchone()
+                prior = evidence.unpack(previous[0])
+                if beef is None:
+                    beef = previous[1]
+            if beef is None:
+                beef = b''
+            txid, vout = row.payment_id.split('.')
+            if headers is None:
+                headers = HeaderStore()  # No anchors; C4 cannot confirm any required root.
+            tip = headers.best_tip()
+            result = evaluate(beef=beef, store=headers, agreement=agreement, offer_hash=row.offer_hash,
+                              txid=txid, payment_id=row.payment_id, vout=int(vout), amount_sats=agreement.price,
+                              policy=terms['confirmationPolicy'], conflict_status=conflict_status, arrival=now,
+                              pay_by=terms['payBy'], prior=prior, assigned_raw=row.raw)
+            if result.status in ('CURRENT', 'LATE') and conflict_status == 'unavailable':
+                result = Result('PENDING', 'conflict-policy-unavailable', prior)
+            paid_at = row.paid_at
+            if paid_at is None and result.status == 'CURRENT':
+                require(now <= terms['payBy'] and result.record.first_arrival == now, 'late')
+                paid_at = now
+            revision = row.evidence_revision + 1
+            values = (thread, revision, row.payment_id, now, beef, tip['hash'] if tip else None,
+                      tip['height'] if tip else None, conflict_status, result.status, result.reason, result.depth,
+                      evidence.pack(result.record), delivery and result.status == 'CURRENT' and paid_at is not None)
+            self._db.execute('INSERT INTO evidence_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', values)
+            self._db.execute('UPDATE agreements SET evidence_revision=?,paid_at=? WHERE thread=?',
+                             (revision, paid_at, thread))
+            return evidence.Evaluation.from_row(values)
+
     def _selected(self, thread, offer_hash, accept_hash):
         row = self.get(thread)
         require(row is not None, 'not-accepted')
@@ -200,10 +271,7 @@ class Store:
                 _, msgs = self._ack_check(row, row.ack, None)
             else:
                 _, msgs = self._authorize(row, now)
-            terms = msgs[2].payload['body']['terms']
-            addr = btc.b58decode(terms['paymentAddress'])
-            agreement = Agreement(offer_hash, accept_hash, bytes.fromhex(msgs[1].payload['from']['pubkey']),
-                                  b'\x76\xa9\x14' + addr[1:21] + b'\x88\xac', terms['priceSats'])
+            agreement, _ = payment_terms(row, msgs)
             verify(raw, parents, agreement, offer_hash=offer_hash, vout=vout, payment_id=payment_id)
             if row.payment_id is None:
                 self._db.execute('UPDATE agreements SET payment_id=?, raw=? WHERE thread=?', (payment_id, raw, thread))

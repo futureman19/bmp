@@ -92,7 +92,8 @@ def _valid_ancestry(sources, subject):
 
 def evaluate(*, beef: bytes, store: HeaderStore, agreement: Agreement, offer_hash: str,
              txid: str, payment_id: str, vout: int, amount_sats: int, policy: str,
-             conflict_status: str, arrival: int, pay_by: int, prior: Record | None = None) -> Result:
+             conflict_status: str, arrival: int, pay_by: int, prior: Record | None = None,
+             assigned_raw: bytes | None = None) -> Result:
     """Evaluate against a stable local HeaderStore snapshot and stored terms.
 
     arrival is trusted receiver time, never a peer timestamp. Only a local
@@ -136,6 +137,8 @@ def evaluate(*, beef: bytes, store: HeaderStore, agreement: Agreement, offer_has
     try:
         bumps, entries = atomic(beef, txid)
         subject = entries[-1]
+        if assigned_raw is not None and subject['raw'] != assigned_raw:
+            return invalid('assigned-raw-mismatch')
         needed = tuple(dict.fromkeys(i['outpoint'][:32][::-1].hex() for i in parse(subject['raw'])['inputs']))
         by_id = {e['txid']: e for e in entries[:-1]}
         if any(p not in by_id for p in needed):
