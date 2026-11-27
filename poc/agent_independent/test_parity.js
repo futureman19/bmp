@@ -90,6 +90,11 @@ ok(katSig.toString('hex') ===
   '2442ce9d2b916064108014783e923ec36b49743e2ffa1c4496f01a512aafd9e5',
   'RFC6979 fixed KAT r||s (key 1, "Satoshi Nakamoto")');
 ok(secp.opensslVerify(secp.derivePubkey(k1), Buffer.from('Satoshi Nakamoto'), katSig), 'OpenSSL verifies fixed KAT signature');
+// Q2R item 6 (review): direct isLowS low/high assertions on the FIXED RFC6979
+// KAT signature and its high-S counterpart (full 64-byte buffers).
+ok(secp.isLowS(katSig) === true, 'item6: fixed RFC6979 KAT signature is low-S (full 64 bytes)');
+const katHighS = Buffer.concat([katSig.subarray(0, 32), secp.bigIntTo32(secp.N - secp.bytesToBigInt(katSig.subarray(32, 64)))]);
+ok(secp.isLowS(katHighS) === false, 'item6: fixed KAT high-S counterpart rejected');
 
 // ---------------------------------------------------------------------------
 console.log('== A2. JCS / Base64 / Base58 / outpoint boundary units ==');
@@ -146,6 +151,7 @@ ok(addrPayload && addrPayload.length === 25 && addrPayload[0] === 0x00, 'Base58 
 // ---------------------------------------------------------------------------
 console.log('== B. positive golden vectors: literal semantic fixtures reproduce bytes ==');
 ok(Object.keys(FIXTURES).length === 12, 'literal semantic fixtures cover all 12 cases');
+let posTotal = 0, posSemExact = 0, posRtExact = 0;
 const decoded = {};
 for (const c of posCases) {
   const buf = srcBytes(c.name);
@@ -178,6 +184,11 @@ for (const c of posCases) {
   const encRt = wire.encodeEnvelope({ action: d.action, createdAt: d.createdAt, expiresAt: d.expiresAt, messageId: d.messageId, threadId: d.threadId, from: d.from, to: d.to, body: d.body, privateKey: keyByPub[d.from.pubkey] });
   const rtByteExact = encRt.bytes.equals(buf);
   ok(rtByteExact, `${c.name}: decode->encode roundtrip byte-exact`);
+  // Item 7 (review): success counts derive from OBSERVED comparisons, never
+  // from container length — a forced failure must print a failing count.
+  posTotal++;
+  if (semByteExact) posSemExact++;
+  if (rtByteExact) posRtExact++;
   manifestPushPositive(c, encSem, semByteExact, rtByteExact);
 }
 function manifestPushPositive(c, enc, semReproduced, rtRoundtrip) {
@@ -509,6 +520,18 @@ probe('item1: RECEIPT payment amount != offer price', rebuild('receipt', canonBu
 }
 probe('item1 control: DELIVER full context accepted', rebuild('deliver', canonBuf('deliver')), null, { context: fullCtx });
 probe('item1 control: RECEIPT full context accepted', rebuild('receipt', canonBuf('receipt')), null, { context: fullCtx });
+// Q2R item 1 (review): missing ACCEPT and wrong ACK recipient must break
+// DELIVER and RECEIPT identically through the shared binding helper.
+{
+  const noAccept = wire.makeContext(Object.values(decoded).filter(d => d.action !== 'ACCEPT'));
+  probe('item1: DELIVER with missing ACCEPT', rebuild('deliver', canonBuf('deliver')), 'reference-action', { context: noAccept });
+  probe('item1: RECEIPT with missing ACCEPT', rebuild('receipt', canonBuf('receipt')), 'reference-action', { context: noAccept });
+  const ackWrongTo = wire.decodeEnvelope(rebuild('ack', mutate('ack', p => { p.to = thirdParty; }),
+    hdr => { hdr.writeUInt32BE(wire.targetId(pub3).readUInt32BE(0), 1); }), { context: null });
+  const ctxWrongAck = wire.makeContext(Object.values(decoded).map(d => d.action === 'ACCEPT_ACK' ? ackWrongTo : d));
+  probe('item1: DELIVER with wrong ACK recipient', rebuild('deliver', canonBuf('deliver')), 'reference-action', { context: ctxWrongAck });
+  probe('item1: RECEIPT with wrong ACK recipient', rebuild('receipt', canonBuf('receipt')), 'reference-action', { context: ctxWrongAck });
+}
 
 // --- Q2R item 2: REQUEST-time provider advertisement future skew ---
 {
@@ -518,8 +541,22 @@ probe('item1 control: RECEIPT full context accepted', rebuild('receipt', canonBu
   probe('item2: REQUEST references future-skewed provider ad', reqRefFuture, 'future', { context: ctxFutureAd, now: NOW });
   probe('item2 control: REQUEST valid provider ad accepted', rebuild('request', canonBuf('request')), null, { context: fullCtx, now: NOW });
 }
+// Q2R item 2 (review): +300s boundary accepted; wrong-sender ad binding rejected.
+{
+  const adAt300Bytes = rebuild('provider-ad', canonBuf('provider-ad'), hdr => { hdr.writeUInt32BE(NOW + 300, 7); hdr.writeUInt32BE(NOW + 300 + 604800, 11); });
+  const adAt300 = wire.decodeEnvelope(adAt300Bytes, { context: null });
+  const reqAt300Bytes = rebuild('request', mutate('request', p => { p.body.providerAdvertisementHash = adAt300.sha256; }));
+  const ctxAt300 = wire.makeContext([wire.decodeEnvelope(reqAt300Bytes, { context: null }), adAt300]);
+  probe('item2: REQUEST references provider ad at +300s boundary', reqAt300Bytes, null, { context: ctxAt300, now: NOW });
+  probe('item2: REQUEST references wrong-sender advertisement', rebuild('request', mutate('request', p => { p.body.providerAdvertisementHash = decoded['requester-ad'].sha256; })), 'role', { context: fullCtx, now: NOW });
+}
 
-// --- Q2R item 3: replay-identity-aware context; conflict on differing stored bytes ---
+// --- Q2R item 3 (review): normative replay-conflict identity ---
+// BMP-0005 §8.2 / §9 rule 8: the conflict key is EXACTLY the triple
+// (threadId, from.pubkey, messageId). Action/role/outpoint belong only in
+// contextual reference resolution. Same-principal different-byte reuse
+// conflicts across actions and outpoints; different principals coexist on
+// one messageId; exact-byte duplicates stay idempotent.
 {
   const d1 = decoded['deliver'];
   const d2 = wire.decodeEnvelope(rebuild('deliver', mutate('deliver', p => { p.body.content = 'conflicting delivery content'; })), { context: null });
@@ -529,21 +566,92 @@ probe('item1 control: RECEIPT full context accepted', rebuild('receipt', canonBu
   let idem = true;
   try { wire.makeContext([d1, d1]); } catch (_) { idem = false; }
   ok(idem, 'item3: same-byte idempotent retry preserved');
-  const acc = decoded['accept'];
-  const ackReuse = wire.decodeEnvelope(rebuild('ack', mutate('ack', p => { p.messageId = acc.messageId; }), hdr => { Buffer.from(acc.messageId, 'hex').copy(hdr, 15, 0, 4); }), { context: null });
-  let crossAction = true;
-  try { wire.makeContext([acc, ackReuse]); } catch (_) { crossAction = false; }
-  ok(crossAction, 'item3: cross-action messageId reuse distinguished');
+
+  // (a) Two standalone-valid REQUESTs, same thread/messageId, DIFFERENT
+  // sender keys: must coexist (cross-principal false-conflict regression).
+  const reqMsgId = decoded['request'].messageId;
+  const thirdPartyAd = { ...thirdParty, identityEvidence: 'V0lSRS1PTkxZ' };
+  const adFx = structuredClone(FIXTURES['requester-ad']);
+  adFx.from = thirdPartyAd; adFx.to = thirdParty; // ADVERTISE: evidence on from only
+  const adEnc = wire.encodeEnvelope({ ...adFx, privateKey: k3 });
+  const unrelFx = structuredClone(FIXTURES['request']);
+  unrelFx.from = thirdParty;                    // to stays the provider
+  unrelFx.body.requesterAdvertisement = adEnc.bytes.toString('base64');
+  unrelFx.body.requesterAdvertisementHash = adEnc.sha256;
+  unrelFx.body.deliverBy = DB + 100000;         // looser cap than the real REQUEST
+  const unrelReq = wire.decodeEnvelope(wire.encodeEnvelope({ ...unrelFx, privateKey: k3 }).bytes, { context: null });
+  let coexist = false;
+  try {
+    const cx = wire.makeContext([unrelReq, decoded['request']]);
+    coexist = cx.findByAction('REQUEST').length === 2 &&
+      cx.findByReplay(reqMsgId, pub3, reqMsgId) === unrelReq &&
+      cx.findByReplay(reqMsgId, decoded['request'].from.pubkey, reqMsgId) === decoded['request'];
+  } catch (_) { coexist = false; }
+  ok(coexist, 'item3: same thread/messageId from different senders coexists');
+
+  // (b) Same provider/thread/messageId reused across OFFER and ACCEPT_ACK
+  // with different bytes: conflict (cross-action same-principal regression).
+  const off = decoded['offer'];
+  const ackReuse = wire.decodeEnvelope(rebuild('ack', mutate('ack', p => { p.messageId = off.messageId; }), hdr => { Buffer.from(off.messageId, 'hex').copy(hdr, 15, 0, 4); }), { context: null });
+  let crossActionConflict = false;
+  try { wire.makeContext([off, ackReuse]); } catch (e) { crossActionConflict = e instanceof wire.WireError && e.code === 'conflict'; }
+  ok(crossActionConflict, 'item3: same-principal cross-action messageId reuse conflicts');
+
+  // (c) Same requester/thread/messageId across two PAYMENTs after changing
+  // txid/outpoint: conflict (outpoint-substitution regression).
+  const pay1 = decoded['payment'];
+  const pay2 = wire.decodeEnvelope(rebuild('payment', mutate('payment', p => { p.body.txid = '5'.repeat(64); })), { context: null });
+  let outpointConflict = false;
+  try { wire.makeContext([pay1, pay2]); } catch (e) { outpointConflict = e instanceof wire.WireError && e.code === 'conflict'; }
+  ok(outpointConflict, 'item3: same-principal PAYMENT outpoint substitution conflicts');
+
+  // Cross-thread reuse by one principal stays distinguishable (threadId is
+  // part of the normative triple).
   const delivThread = wire.decodeEnvelope(rebuild('deliver', mutate('deliver', p => { p.threadId = 'f'.repeat(32); })), { context: null });
   let crossThread = true;
   try { wire.makeContext([d1, delivThread]); } catch (_) { crossThread = false; }
   ok(crossThread, 'item3: cross-thread messageId reuse distinguished');
+
+  // Original plan regression: a valid unrelated ADVERTISE carrying the
+  // originating REQUEST's messageId must not displace the REQUEST for cap
+  // enforcement; over-cap DELIVER still rejects 'window', at-cap accepted.
+  const collAdFx = structuredClone(FIXTURES['requester-ad']);
+  collAdFx.from = thirdPartyAd; collAdFx.to = thirdParty;
+  collAdFx.messageId = reqMsgId; collAdFx.threadId = reqMsgId;
+  const collAd = wire.decodeEnvelope(wire.encodeEnvelope({ ...collAdFx, privateKey: k3 }).bytes, { context: null });
+  const ctxCollision = wire.makeContext([...Object.values(decoded), collAd]);
+  ok(ctxCollision.findByReplay(reqMsgId, decoded['request'].from.pubkey, reqMsgId).action === 'REQUEST',
+    'item3: unrelated ADVERTISE does not displace the originating REQUEST');
+  probe('item3: over-cap DELIVER despite ADVERTISE messageId collision',
+    rebuild('deliver', canonBuf('deliver'), hdr => { hdr.writeUInt32BE(DB + 1, 7); hdr.writeUInt32BE(CAP + 1, 11); }),
+    'window', { context: ctxCollision });
+  probe('item3: at-cap DELIVER valid despite ADVERTISE messageId collision',
+    rebuild('deliver', canonBuf('deliver'), hdr => { hdr.writeUInt32BE(DB, 7); hdr.writeUInt32BE(CAP, 11); }),
+    null, { context: ctxCollision });
+
+  // First-request poisoning: an unrelated REQUEST with the same messageId
+  // and a looser deliverBy must not satisfy the real thread's cap check.
+  // Participant/role-aware resolution selects the real REQUEST; the
+  // unrelated REQUEST is placed FIRST to expose first-match selection.
+  const ctxPoison = wire.makeContext([unrelReq, ...Object.values(decoded)]);
+  probe('item3: over-cap DELIVER despite unrelated same-messageId REQUEST',
+    rebuild('deliver', canonBuf('deliver'), hdr => { hdr.writeUInt32BE(DB + 1, 7); hdr.writeUInt32BE(CAP + 1, 11); }),
+    'window', { context: ctxPoison });
+  probe('item3: at-cap DELIVER valid despite unrelated same-messageId REQUEST',
+    rebuild('deliver', canonBuf('deliver'), hdr => { hdr.writeUInt32BE(DB, 7); hdr.writeUInt32BE(CAP, 11); }),
+    null, { context: ctxPoison });
 }
 
 // --- Q2R item 4: identity PROOF must not carry from.identityEvidence ---
 probe('item4: identity PROOF with from.identityEvidence rejected', rebuild('proof-identity', mutate('proof-identity', p => { p.from.identityEvidence = 'V0lSRS1PTkxZ'; })), 'duplicate-proof');
 probe('item4 control: identity PROOF without evidence accepted', rebuild('proof-identity', canonBuf('proof-identity')), null);
 probe('item4 control: payment PROOF unchanged', rebuild('proof-payment', canonBuf('proof-payment')), null);
+// Q2R item 4 (review): full-context variant, plus a payment-PROOF control
+// that actually carries distinct sender identity evidence (must stay valid:
+// the prohibition is identity-PROOF-specific, not blanket).
+probe('item4: identity PROOF with from.identityEvidence (full context)', rebuild('proof-identity', mutate('proof-identity', p => { p.from.identityEvidence = 'V0lSRS1PTkxZ'; })), 'duplicate-proof', { context: fullCtx, now: NOW });
+probe('item4 control: payment PROOF carrying sender identity evidence (full context)', rebuild('proof-payment', mutate('proof-payment', p => { p.from.identityEvidence = 'V0lSRS1PTkxZ'; })), null, { context: fullCtx, now: NOW });
+probe('item4 control: payment PROOF carrying sender identity evidence (null context)', rebuild('proof-payment', mutate('proof-payment', p => { p.from.identityEvidence = 'V0lSRS1PTkxZ'; })), null);
 
 // --- Q2R item 5: endpoint exact-string validation (controls/userinfo/fragment) ---
 const epProbe = (label, ep, code) => probe(label, rebuild('provider-ad', mutate('provider-ad', p => { p.body.endpoint = ep; })), code);
@@ -559,18 +667,32 @@ epProbe('item5: endpoint fragment', 'https://provider.example/bmp-agent/1#frag',
 epProbe('item5: endpoint http scheme', 'http://provider.example/bmp-agent/1', 'format');
 epProbe('item5 control: clean https endpoint accepted', 'https://provider.example/bmp-agent/1', null);
 epProbe('item5 control: https with query accepted', 'https://provider.example/bmp-agent/1?q=1', null);
+// Q2R item 5 (review): CR + leading/trailing tab/newline boundaries; a bare
+// HTTPS root (no path) is a valid endpoint and must not be normalized away.
+epProbe('item5: endpoint embedded CR', 'https://provider.example/\rbmp-agent/1', 'format');
+epProbe('item5: endpoint leading CR', '\rhttps://provider.example/bmp-agent/1', 'format');
+epProbe('item5: endpoint trailing CR', 'https://provider.example/bmp-agent/1\r', 'format');
+epProbe('item5: endpoint leading tab', '\thttps://provider.example/bmp-agent/1', 'format');
+epProbe('item5: endpoint trailing tab', 'https://provider.example/bmp-agent/1\t', 'format');
+epProbe('item5: endpoint leading newline', '\nhttps://provider.example/bmp-agent/1', 'format');
+epProbe('item5: endpoint trailing newline', 'https://provider.example/bmp-agent/1\n', 'format');
+epProbe('item5 control: bare HTTPS root accepted', 'https://provider.example', null);
+epProbe('item5 control: HTTPS root with explicit slash accepted', 'https://provider.example/', null);
 
 // ---------------------------------------------------------------------------
 manifest.assertions = { passed: pass, failed };
 manifest.edgeProbes = probeCount;
 manifest.negativesRejected = negRejected;
 manifest.negativesCodeMatch = negCodeMatch;
+manifest.positivesTotal = posTotal;
+manifest.positivesSemanticByteExact = posSemExact;
+manifest.positivesRoundtripByteExact = posRtExact;
 const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 0));
 fs.writeFileSync(path.join(__dirname, 'manifest.json'), manifestBytes);
 const manifestHash = secp.sha256(manifestBytes).toString('hex');
 console.log('');
-console.log(`positives reproduced byte-exact: ${manifest.positives.length}/12`);
-console.log(`negatives rejected: ${negRejected}/33 (code-category match ${negCodeMatch}/33)`);
+console.log(`positives reproduced byte-exact: ${posSemExact}/${posTotal}`);
+console.log(`negatives rejected: ${negRejected}/${negCases.length} (code-category match ${negCodeMatch}/${negCases.length})`);
 console.log(`edge probes: ${probeCount}`);
 console.log(`assertions passed: ${pass}, failed: ${failed}`);
 console.log(`manifest sha256: ${manifestHash}`);

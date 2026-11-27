@@ -474,25 +474,33 @@ function validateBody(action, body, env, opts) {
 // ---------- context index ----------
 function makeContext(decodedList) {
   const bySha = new Map();
-  const byMsg = new Map();
+  const byReplay = new Map();
   const payments = [];
   for (const d of decodedList) {
     bySha.set(d.sha256, d);
-    // §5.3 replay identity is action-, thread- and outpoint-aware: ADVERTISE
-    // replays per sender principal, PAYMENT per outpoint, others per messageId.
-    // Keying by messageId alone lets one id poison another action's lookup.
-    const replayKey = d.action === 'ADVERTISE' ? d.from.pubkey
-      : d.action === 'PAYMENT' ? d.body.txid + ':' + d.body.vout
-      : d.messageId;
-    const k = d.action + '|' + d.threadId + '|' + replayKey;
-    const prev = byMsg.get(k);
+    // BMP-0005 §8.2 / §9 rule 8: replay-conflict identity is EXACTLY the
+    // triple (threadId, from.pubkey, messageId). Action, role and PAYMENT
+    // outpoint are NOT part of conflict identity — they belong only in
+    // contextual reference resolution. Same-principal different-byte reuse
+    // of one triple conflicts across actions and outpoints; different
+    // principals may coexist on one messageId; exact bytes stay idempotent.
+    const k = d.threadId + '|' + d.from.pubkey + '|' + d.messageId;
+    const prev = byReplay.get(k);
     if (prev !== undefined && prev.sha256 !== d.sha256) fail('conflict', 'context', 'conflicting envelopes for one replay identity');
-    byMsg.set(k, d);
+    byReplay.set(k, d);
     if (d.action === 'PAYMENT') payments.push(d);
   }
   return {
     findBySha: h => bySha.get(h) || null,
-    findByMsg: (action, threadId, replayKey) => byMsg.get(action + '|' + threadId + '|' + replayKey) || null,
+    // Normative replay-identity lookup (the conflict index itself).
+    findByReplay: (threadId, pubkey, messageId) => byReplay.get(threadId + '|' + pubkey + '|' + messageId) || null,
+    // Action/role-aware contextual lookup, kept SEPARATE from conflict
+    // identity: unique action+thread+messageId match, else null (never a
+    // silent first/last selection).
+    findByMsg: (action, threadId, messageId) => {
+      const hits = decodedList.filter(d => d.action === action && d.threadId === threadId && d.messageId === messageId);
+      return hits.length === 1 ? hits[0] : null;
+    },
     findByPaymentId: pid => payments.find(p => (p.body.txid + '.' + p.body.vout) === pid) || null,
     findByAction: a => decodedList.filter(d => d.action === a),
   };
@@ -595,8 +603,20 @@ function decodeEnvelope(buf, opts = {}) {
   // §8.2: later task envelopes expire no later than the originating REQUEST's
   // deliverBy + 86400 (enforced when transcript context is supplied).
   if (opts.context && action !== 'ADVERTISE' && action !== 'REQUEST') {
-    const req = opts.context.findByAction('REQUEST').find(r => r.messageId === env.threadId) || null;
-    if (req && req.action === 'REQUEST' && env.expiresAt > req.body.deliverBy + 86400) {
+    // Participant/role-aware originating-REQUEST resolution. Once
+    // same-messageId REQUESTs from different principals coexist (§8.2),
+    // replay identity alone cannot select the REQUEST: match the envelope's
+    // sender/recipient pair against the REQUEST's principals in either role
+    // order. Never silently take first/last; remaining ambiguity rejects as
+    // context-required. No matching REQUEST in context => contextual cap
+    // check is skipped (missing ancestry is handled by reference binding).
+    const candidates = opts.context.findByAction('REQUEST').filter(r => r.messageId === env.threadId);
+    const matched = candidates.filter(r =>
+      (principalEq(r.from, env.from) && principalEq(r.to, env.to)) ||
+      (principalEq(r.from, env.to) && principalEq(r.to, env.from)));
+    if (matched.length > 1) fail('context-required', '$.threadId', 'ambiguous originating REQUEST for thread participants');
+    const req = matched.length === 1 ? matched[0] : null;
+    if (req && env.expiresAt > req.body.deliverBy + 86400) {
       fail('window', '$.expiresAt', 'task expiry beyond request deliverBy + 86400');
     }
   }

@@ -48,9 +48,9 @@ are executed only as regression gates, not used as implementation guidance.
 |---|---|
 | `secp256k1.js` | Field/group arithmetic, pubkey derivation, RFC 6979 deterministic low-s ECDSA (`r‖s`, 64 bytes), verifier, OpenSSL cross-checks via `crypto` |
 | `jcs.js` | Strict RFC 8785 (JCS) canonicalization + canonical-only JSON parser (duplicate keys, noncanonical numbers/escapes/Unicode, negative zero, lone surrogates, depth bound all rejected) |
-| `wire.js` | 85-byte-prefix version `0x02` envelope encode/decode: target derivation, closed action schemas, base64/pin/outpoint rules, unconditional structural freshness, role/thread/reference binding, task expiry cap, provider-ad freshness, embedded requester advertisement, transcript context checks; Q2R adds shared DELIVER/RECEIPT PAYMENT binding (thread/roles/offer/ACCEPT+ACK/amount), REQUEST-time provider-ad future-skew rejection, replay-identity-aware messageId resolution with stored-conflict detection, identity-PROOF `from.identityEvidence` prohibition (decode+encode), and exact-string endpoint pre-validation |
+| `wire.js` | 85-byte-prefix version `0x02` envelope encode/decode: target derivation, closed action schemas, base64/pin/outpoint rules, unconditional structural freshness, role/thread/reference binding, task expiry cap, provider-ad freshness, embedded requester advertisement, transcript context checks; Q2R adds shared DELIVER/RECEIPT PAYMENT binding (thread/roles/offer/ACCEPT+ACK/amount), REQUEST-time provider-ad future-skew rejection, normative replay-conflict identity `(threadId, from.pubkey, messageId)` with participant/role-aware REQUEST resolution (`context-required` on ambiguity), identity-PROOF `from.identityEvidence` prohibition (decode+encode), and exact-string endpoint pre-validation |
 | `fixtures_semantic.json` | Literal semantic inputs for all 12 published envelopes (recorded once from the published bytes); the encoder reproduces every golden envelope from these literals, never from decoder output |
-| `test_parity.js` | Known-answer crypto tests → semantic-fixture positive reproduction → negative replay (hard-fail category match) → 122 decode/edge probes + 11 encoder probes → deterministic manifest |
+| `test_parity.js` | Known-answer crypto tests → semantic-fixture positive reproduction → negative replay (hard-fail category match) → 144 decode/edge probes + 11 encoder probes → deterministic manifest; positive success counts derive from observed comparisons, never container length |
 | `manifest.json` | Generated deterministic evidence manifest (rewritten identically on every run; includes per-negative outcomes/codes and per-probe expectations) |
 
 ## Commands
@@ -67,8 +67,8 @@ Expected tail:
 ```text
 positives reproduced byte-exact: 12/12
 negatives rejected: 33/33 (code-category match 33/33)
-edge probes: 133
-assertions passed: 383, failed: 0
+edge probes: 155
+assertions passed: 410, failed: 0
 ALL PASS
 ```
 
@@ -121,7 +121,7 @@ the system interpreter that owns the installed requirements,
    error code category; a category mismatch **fails the suite** (not a
    printed note), and each negative's outcome/code is recorded in the
    manifest. Both mutation models (splice and append-zeroes) are exercised.
-5. **Decode/edge probes (122):** the original battery (canonical JSON,
+5. **Decode/edge probes (144):** the original battery (canonical JSON,
    curve points, addresses, pins, base64, version/action/length, closed
    schemas, high-s, target/reference binding) plus validly re-signed
    false-accept regressions for every Q1R protocol correction, with
@@ -143,19 +143,34 @@ the system interpreter that owns the installed requirements,
      (item 11);
    - JSON nesting depth 65 rejection at envelope level.
    Q2R protocol-binding regressions (validly re-signed, with null/full-context
-   variants and valid controls; each false-accepts on the Q1R base code):
+   variants and valid controls; the original set false-accepts on the Q1R base
+   code, and the item-3 review probes false-accept/false-conflict on the
+   rejected Q2R attempt b7d615c):
    - DELIVER/RECEIPT bound to the referenced PAYMENT's thread, sender/recipient
-     roles, offer hash, amount, and the provider ACCEPT+ACCEPT_ACK pair (item 1);
+     roles, offer hash, amount, and the provider ACCEPT+ACCEPT_ACK pair;
+     missing ACCEPT and wrong ACK recipient break both actions identically
+     through the shared binding helper (item 1);
    - REQUEST rejects a referenced provider advertisement created beyond the
-     300s future-skew allowance when `now` is supplied (item 2);
-   - context rejects two stored envelopes sharing one replay identity
-     (action+messageId+role) with differing bytes, and distinguishes
-     cross-action / cross-thread messageIds (item 3);
-   - identity PROOF forbids outer `from.identityEvidence` at decode and encode (item 4);
+     300s future-skew allowance when `now` is supplied; the +300s boundary is
+     accepted and wrong-sender advertisement binding is rejected (item 2);
+   - replay-conflict identity is EXACTLY the normative triple
+     `(threadId, from.pubkey, messageId)` (BMP-0005 §8.2 / §9 rule 8):
+     same-principal different-byte reuse conflicts across actions and PAYMENT
+     outpoints, different principals coexist on one messageId, exact-byte
+     duplicates stay idempotent; action/role-aware REQUEST resolution is
+     participant-aware with explicit `context-required` on ambiguity, so an
+     unrelated same-messageId ADVERTISE or a looser-cap unrelated REQUEST
+     cannot poison the originating REQUEST's expiry cap (over-cap DELIVER
+     rejected, at-cap accepted) (item 3);
+   - identity PROOF forbids outer `from.identityEvidence` at decode and encode
+     (null and full context); payment PROOF carrying distinct sender identity
+     evidence stays valid — the prohibition is identity-PROOF-specific (item 4);
    - endpoint exact-string pre-validation rejects leading/trailing whitespace,
-     embedded tab/newline, C0/DEL controls, and empty userinfo `@host` (item 5);
+     CR, embedded tab/newline, C0/DEL controls, and empty userinfo `@host`;
+     a bare HTTPS root is accepted without normalization (item 5);
    - `isLowS` requires a 64-byte r‖s buffer (32/63/65/empty rejected, not
-     vacuously low) plus a full-signature low-s KAT (item 6).
+     vacuously low) plus direct low/high-S assertions on the fixed RFC6979
+     KAT signature and its high-S counterpart (item 6).
 6. **Encoder probes (11):** negative zero and lone surrogates rejected
    before signing, outer REQUEST evidence rejected, wrong signer key
    (pubkey mismatch) rejected instead of emitting an invalid envelope,
@@ -165,16 +180,21 @@ the system interpreter that owns the installed requirements,
 
 ## Verification status at commit
 
-- Independent suite: 383 assertions, 0 failures; 12/12 positives
+- Independent suite: 410 assertions, 0 failures; 12/12 positives
   byte-exact from literal semantic fixtures; 33/33 negatives rejected with
-  exact category match; 133 probes (122 decode/edge + 11 encoder).
+  exact category match; 155 probes (144 decode/edge + 11 encoder).
 - Q2R non-vacuity gate: running the Q2R regressions against the Q1R base
   wire.js/secp256k1.js reproduces 20 false accepts (item 1×6, item 2×1,
   item 3×1, item 4×1, item 5×7, item 6×4); all are rejected by this commit.
+  Against the rejected Q2R attempt b7d615c the three reviewer item-3 probes
+  fail (cross-principal false conflict; cross-action and PAYMENT-outpoint
+  same-principal false accepts). Item-7 fault injection (forcing
+  `semByteExact = false` in a scratch copy) prints `0/12`, exits 1, and
+  records `positivesSemanticByteExact = 0` / `semanticFixtureFalse = 12`.
 - Twice-run gate: stdout and manifest byte-identical
-  (stdout sha256 `0052258cfd735ef1ef31df3981e8619320daccf15046169e92e15942ac1057d1`,
-  manifest sha256 `748b1e2f51ef69079883a86bf0e1e3f900a11de5fc4c07056439f646b9283d7a`).
-- `python -m pytest tests -q`: 198 passed.
+  (stdout sha256 `4a7abbeb2fdfc35a8209e4b228d6383bc5bc3472ce7358c46b399f34fa3ca434`,
+  manifest sha256 `06e05a439113dc7b4f042e5041c10b8b0c6ab774c537ca7bf29b9da76c43052d`).
+- `python -m pytest tests -q` (via `py -3`, candidate `poc` on PYTHONPATH): 198 passed.
 - `node agent/check_vectors.js` (C1 Node/OpenSSL): 12 envelopes passed.
 - `node js_tests/svctest_l2l3.js`: 27 passed, 0 failed.
 - `node js_tests/svctest_ble.js`: 26 passed, 0 failed.
