@@ -475,7 +475,6 @@ function validateBody(action, body, env, opts) {
 function makeContext(decodedList) {
   const bySha = new Map();
   const byReplay = new Map();
-  const payments = [];
   for (const d of decodedList) {
     bySha.set(d.sha256, d);
     // BMP-0005 §8.2 / §9 rule 8: replay-conflict identity is EXACTLY the
@@ -488,21 +487,31 @@ function makeContext(decodedList) {
     const prev = byReplay.get(k);
     if (prev !== undefined && prev.sha256 !== d.sha256) fail('conflict', 'context', 'conflicting envelopes for one replay identity');
     byReplay.set(k, d);
-    if (d.action === 'PAYMENT') payments.push(d);
   }
+  // §9 rule 8 exact-duplicate idempotence extends to contextual candidate
+  // enumeration: a replayed exact-byte envelope is the SAME transcript
+  // entry, so action/role lookups must see each distinct envelope exactly
+  // once (otherwise one duplicated REQUEST reads as two candidates and a
+  // valid DELIVER is misrejected as ambiguous). bySha is keyed by the
+  // full-envelope SHA-256, so its values are the deduplicated transcript in
+  // first-occurrence order. Different-byte reuse of one replay identity has
+  // already failed above, so deduplication can never mask a conflict, and
+  // genuinely distinct envelopes (different bytes) always stay distinct.
+  const unique = [...bySha.values()];
+  const payments = unique.filter(d => d.action === 'PAYMENT');
   return {
     findBySha: h => bySha.get(h) || null,
     // Normative replay-identity lookup (the conflict index itself).
     findByReplay: (threadId, pubkey, messageId) => byReplay.get(threadId + '|' + pubkey + '|' + messageId) || null,
     // Action/role-aware contextual lookup, kept SEPARATE from conflict
-    // identity: unique action+thread+messageId match, else null (never a
-    // silent first/last selection).
+    // identity: unique action+thread+messageId match among DISTINCT
+    // envelopes, else null (never a silent first/last selection).
     findByMsg: (action, threadId, messageId) => {
-      const hits = decodedList.filter(d => d.action === action && d.threadId === threadId && d.messageId === messageId);
+      const hits = unique.filter(d => d.action === action && d.threadId === threadId && d.messageId === messageId);
       return hits.length === 1 ? hits[0] : null;
     },
     findByPaymentId: pid => payments.find(p => (p.body.txid + '.' + p.body.vout) === pid) || null,
-    findByAction: a => decodedList.filter(d => d.action === a),
+    findByAction: a => unique.filter(d => d.action === a),
   };
 }
 
@@ -607,7 +616,10 @@ function decodeEnvelope(buf, opts = {}) {
     // same-messageId REQUESTs from different principals coexist (§8.2),
     // replay identity alone cannot select the REQUEST: match the envelope's
     // sender/recipient pair against the REQUEST's principals in either role
-    // order. Never silently take first/last; remaining ambiguity rejects as
+    // order. findByAction enumerates DISTINCT envelopes only (exact-byte
+    // replays are deduplicated in makeContext), so a duplicated REQUEST
+    // copy stays idempotent. Never silently take first/last; remaining
+    // ambiguity between genuinely distinct REQUESTs rejects as
     // context-required. No matching REQUEST in context => contextual cap
     // check is skipped (missing ancestry is handled by reference binding).
     const candidates = opts.context.findByAction('REQUEST').filter(r => r.messageId === env.threadId);

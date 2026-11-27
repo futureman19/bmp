@@ -48,9 +48,9 @@ are executed only as regression gates, not used as implementation guidance.
 |---|---|
 | `secp256k1.js` | Field/group arithmetic, pubkey derivation, RFC 6979 deterministic low-s ECDSA (`r‖s`, 64 bytes), verifier, OpenSSL cross-checks via `crypto` |
 | `jcs.js` | Strict RFC 8785 (JCS) canonicalization + canonical-only JSON parser (duplicate keys, noncanonical numbers/escapes/Unicode, negative zero, lone surrogates, depth bound all rejected) |
-| `wire.js` | 85-byte-prefix version `0x02` envelope encode/decode: target derivation, closed action schemas, base64/pin/outpoint rules, unconditional structural freshness, role/thread/reference binding, task expiry cap, provider-ad freshness, embedded requester advertisement, transcript context checks; Q2R adds shared DELIVER/RECEIPT PAYMENT binding (thread/roles/offer/ACCEPT+ACK/amount), REQUEST-time provider-ad future-skew rejection, normative replay-conflict identity `(threadId, from.pubkey, messageId)` with participant/role-aware REQUEST resolution (`context-required` on ambiguity), identity-PROOF `from.identityEvidence` prohibition (decode+encode), and exact-string endpoint pre-validation |
+| `wire.js` | 85-byte-prefix version `0x02` envelope encode/decode: target derivation, closed action schemas, base64/pin/outpoint rules, unconditional structural freshness, role/thread/reference binding, task expiry cap, provider-ad freshness, embedded requester advertisement, transcript context checks; Q2R adds shared DELIVER/RECEIPT PAYMENT binding (thread/roles/offer/ACCEPT+ACK/amount), REQUEST-time provider-ad future-skew rejection, normative replay-conflict identity `(threadId, from.pubkey, messageId)` with exact-byte replay deduplication in contextual candidate enumeration and participant/role-aware REQUEST resolution (`context-required` on genuine ambiguity), identity-PROOF `from.identityEvidence` prohibition (decode+encode), and exact-string endpoint pre-validation |
 | `fixtures_semantic.json` | Literal semantic inputs for all 12 published envelopes (recorded once from the published bytes); the encoder reproduces every golden envelope from these literals, never from decoder output |
-| `test_parity.js` | Known-answer crypto tests → semantic-fixture positive reproduction → negative replay (hard-fail category match) → 144 decode/edge probes + 11 encoder probes → deterministic manifest; positive success counts derive from observed comparisons, never container length |
+| `test_parity.js` | Known-answer crypto tests → semantic-fixture positive reproduction → negative replay (hard-fail category match) → 149 decode/edge probes + 11 encoder probes → deterministic manifest; positive success counts derive from observed comparisons, never container length |
 | `manifest.json` | Generated deterministic evidence manifest (rewritten identically on every run; includes per-negative outcomes/codes and per-probe expectations) |
 
 ## Commands
@@ -67,8 +67,8 @@ Expected tail:
 ```text
 positives reproduced byte-exact: 12/12
 negatives rejected: 33/33 (code-category match 33/33)
-edge probes: 155
-assertions passed: 410, failed: 0
+edge probes: 160
+assertions passed: 418, failed: 0
 ALL PASS
 ```
 
@@ -121,7 +121,7 @@ the system interpreter that owns the installed requirements,
    error code category; a category mismatch **fails the suite** (not a
    printed note), and each negative's outcome/code is recorded in the
    manifest. Both mutation models (splice and append-zeroes) are exercised.
-5. **Decode/edge probes (144):** the original battery (canonical JSON,
+5. **Decode/edge probes (149):** the original battery (canonical JSON,
    curve points, addresses, pins, base64, version/action/length, closed
    schemas, high-s, target/reference binding) plus validly re-signed
    false-accept regressions for every Q1R protocol correction, with
@@ -157,8 +157,13 @@ the system interpreter that owns the installed requirements,
      `(threadId, from.pubkey, messageId)` (BMP-0005 §8.2 / §9 rule 8):
      same-principal different-byte reuse conflicts across actions and PAYMENT
      outpoints, different principals coexist on one messageId, exact-byte
-     duplicates stay idempotent; action/role-aware REQUEST resolution is
-     participant-aware with explicit `context-required` on ambiguity, so an
+     duplicates stay idempotent — including in contextual candidate
+     enumeration: one extra exact-byte copy of the published REQUEST (or of
+     the whole PAYMENT/ACCEPT/ACK binding chain) leaves a valid DELIVER /
+     RECEIPT accepted, the over-cap DELIVER still `window`-rejected and the
+     at-cap DELIVER accepted; action/role-aware REQUEST resolution is
+     participant-aware with explicit `context-required` on genuine ambiguity
+     (two distinct participant-matching REQUESTs still reject), so an
      unrelated same-messageId ADVERTISE or a looser-cap unrelated REQUEST
      cannot poison the originating REQUEST's expiry cap (over-cap DELIVER
      rejected, at-cap accepted) (item 3);
@@ -180,20 +185,26 @@ the system interpreter that owns the installed requirements,
 
 ## Verification status at commit
 
-- Independent suite: 410 assertions, 0 failures; 12/12 positives
+- Independent suite: 418 assertions, 0 failures; 12/12 positives
   byte-exact from literal semantic fixtures; 33/33 negatives rejected with
-  exact category match; 155 probes (144 decode/edge + 11 encoder).
+  exact category match; 160 probes (149 decode/edge + 11 encoder).
 - Q2R non-vacuity gate: running the Q2R regressions against the Q1R base
   wire.js/secp256k1.js reproduces 20 false accepts (item 1×6, item 2×1,
   item 3×1, item 4×1, item 5×7, item 6×4); all are rejected by this commit.
   Against the rejected Q2R attempt b7d615c the three reviewer item-3 probes
   fail (cross-principal false conflict; cross-action and PAYMENT-outpoint
-  same-principal false accepts). Item-7 fault injection (forcing
+  same-principal false accepts). Against the rejected Q2R attempt 164ba7ec
+  the comment-862 duplicate-context regressions fail 5 assertions (duplicate
+  REQUEST enumerated twice; findByMsg ambiguous; valid and at-cap DELIVER
+  false-rejected `context-required`; over-cap DELIVER misclassified
+  `context-required` instead of `window`); all pass at this commit, while the
+  genuine-ambiguity and duplicate-binding-chain controls pass on both.
+  Item-7 fault injection (forcing
   `semByteExact = false` in a scratch copy) prints `0/12`, exits 1, and
   records `positivesSemanticByteExact = 0` / `semanticFixtureFalse = 12`.
 - Twice-run gate: stdout and manifest byte-identical
-  (stdout sha256 `4a7abbeb2fdfc35a8209e4b228d6383bc5bc3472ce7358c46b399f34fa3ca434`,
-  manifest sha256 `06e05a439113dc7b4f042e5041c10b8b0c6ab774c537ca7bf29b9da76c43052d`).
+  (stdout sha256 `e54a2e5df768c99df27994531558ec6aaca4b3b91dd9209eab6abfd049c6b0f6`,
+  manifest sha256 `ea408137eedeef4a545fd92b9910a65dfabde3e23fd3896828f0b65cd0fe2ad9`).
 - `python -m pytest tests -q` (via `py -3`, candidate `poc` on PYTHONPATH): 198 passed.
 - `node agent/check_vectors.js` (C1 Node/OpenSSL): 12 envelopes passed.
 - `node js_tests/svctest_l2l3.js`: 27 passed, 0 failed.

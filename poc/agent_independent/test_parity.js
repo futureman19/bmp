@@ -640,6 +640,40 @@ probe('item1 control: RECEIPT full context accepted', rebuild('receipt', canonBu
   probe('item3: at-cap DELIVER valid despite unrelated same-messageId REQUEST',
     rebuild('deliver', canonBuf('deliver'), hdr => { hdr.writeUInt32BE(DB, 7); hdr.writeUInt32BE(CAP, 11); }),
     null, { context: ctxPoison });
+
+  // Comment 862: exact-byte duplicate REQUEST copies in context must stay
+  // idempotent for contextual candidate enumeration — one extra identical
+  // copy of the published REQUEST must not turn a valid DELIVER into
+  // context-required, and must not loosen the cap check either.
+  const ctxDupReq = wire.makeContext([...Object.values(decoded), decoded['request']]);
+  ok(ctxDupReq.findByAction('REQUEST').length === 1, 'item3: exact-byte duplicate REQUEST enumerated once');
+  ok(ctxDupReq.findByMsg('REQUEST', reqMsgId, reqMsgId) === decoded['request'], 'item3: findByMsg resolves exact-byte duplicate REQUEST uniquely');
+  probe('item3: valid DELIVER unchanged with exact duplicate REQUEST copy in context', srcBytes('deliver'), null, { context: ctxDupReq, now: NOW });
+  probe('item3: over-cap DELIVER still window-rejected with duplicate REQUEST copy',
+    rebuild('deliver', canonBuf('deliver'), hdr => { hdr.writeUInt32BE(DB + 1, 7); hdr.writeUInt32BE(CAP + 1, 11); }),
+    'window', { context: ctxDupReq });
+  probe('item3: at-cap DELIVER valid with duplicate REQUEST copy',
+    rebuild('deliver', canonBuf('deliver'), hdr => { hdr.writeUInt32BE(DB, 7); hdr.writeUInt32BE(CAP, 11); }),
+    null, { context: ctxDupReq });
+
+  // Exact-byte duplicates of the whole payment-binding chain must also stay
+  // idempotent for the shared DELIVER/RECEIPT binding lookups.
+  const ctxDupChain = wire.makeContext([...Object.values(decoded), decoded['payment'], decoded['accept'], decoded['ack']]);
+  probe('item3: valid RECEIPT with exact duplicate PAYMENT/ACCEPT/ACK copies', srcBytes('receipt'), null, { context: ctxDupChain, now: NOW });
+
+  // Genuinely distinct matching REQUESTs (different bytes, different
+  // principals, both participant-matching the DELIVER pair) must STILL
+  // reject as context-required — dedup must not collapse real ambiguity.
+  const revFx = structuredClone(FIXTURES['request']);
+  revFx.from = structuredClone(FIXTURES['offer'].from);   // provider principal
+  revFx.to = structuredClone(FIXTURES['request'].from);   // requester principal
+  revFx.body.requesterAdvertisement = srcBytes('provider-ad').toString('base64');
+  revFx.body.requesterAdvertisementHash = decoded['provider-ad'].sha256;
+  revFx.body.providerAdvertisementHash = decoded['requester-ad'].sha256;
+  const revReq = wire.decodeEnvelope(wire.encodeEnvelope({ ...revFx, privateKey: keyByPub[revFx.from.pubkey] }).bytes, { context: null });
+  const ctxAmbig = wire.makeContext([...Object.values(decoded), revReq]);
+  ok(ctxAmbig.findByAction('REQUEST').length === 2, 'item3: distinct role-reversed REQUEST coexists (not deduplicated)');
+  probe('item3: genuinely distinct matching REQUESTs reject context-required', srcBytes('deliver'), 'context-required', { context: ctxAmbig, now: NOW });
 }
 
 // --- Q2R item 4: identity PROOF must not carry from.identityEvidence ---
