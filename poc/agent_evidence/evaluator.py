@@ -76,6 +76,20 @@ def atomic(wire, txid):
     return bumps, entries
 
 
+def _valid_ancestry(sources, subject):
+    positions = {key: index for index, key in enumerate(sources)}
+    included = {key: {p for p in parents if p in positions} for key, parents in sources.items()}
+    if any(positions[p] >= positions[key] for key, parents in included.items() for p in parents):
+        return False
+    reachable = {subject}
+    pending = [subject]
+    while pending:
+        parents = included[pending.pop()] - reachable
+        reachable.update(parents)
+        pending.extend(parents)
+    return len(reachable) == len(sources)
+
+
 def evaluate(*, beef: bytes, store: HeaderStore, agreement: Agreement, offer_hash: str,
              txid: str, payment_id: str, vout: int, amount_sats: int, policy: str,
              conflict_status: str, arrival: int, pay_by: int, prior: Record | None = None) -> Result:
@@ -128,13 +142,11 @@ def evaluate(*, beef: bytes, store: HeaderStore, agreement: Agreement, offer_has
             if by_id.keys() - set(needed):
                 return invalid('substituted-parent')
             return pending('missing-parent')
-        # Reverse topological walk: included grandparents may be redundant but
-        # cannot stand in for parents. No disconnected or forward dependencies.
-        ancestry = set(needed)
-        for e in reversed(entries[:-1]):
-            if e['txid'] not in ancestry:
-                return invalid('unrelated-or-unordered')
-            ancestry.update(i['outpoint'][:32][::-1].hex() for i in parse(e['raw'])['inputs'])
+        sources = {e['txid']: tuple(i['outpoint'][:32][::-1].hex() for i in parse(e['raw'])['inputs'])
+                   for e in entries[:-1]}
+        sources[txid] = needed
+        if not _valid_ancestry(sources, txid):
+            return invalid('unrelated-or-unordered')
         parents = [by_id[p] for p in needed]
         verify(subject['raw'], [e['raw'] for e in parents], agreement, offer_hash=offer_hash,
                vout=vout, payment_id=payment_id)

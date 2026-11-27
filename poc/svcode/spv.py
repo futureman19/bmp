@@ -87,38 +87,39 @@ def bump_root(bump, txid_display_hex: str) -> bytes:
     """Merkle root (internal byte order) implied by this BUMP for the given txid."""
     txid = bytes.fromhex(txid_display_hex)[::-1]
     level0 = bump["path"][0]
-    leaf = next((l for l in level0 if l["hash"] == txid), None)
-    if leaf is None:
-        raise ValueError("txid not in BUMP level 0")
-    levels = []
+    targets = [node for node in level0 if node["hash"] == txid and node["flags"] & FLAG_CLIENT_TXID]
+    if not targets:
+        raise ValueError("txid not in BUMP level 0 as a marked target")
+    if len(targets) != 1:
+        raise ValueError("ambiguous marked txid in BUMP level 0")
+    # Merge upward only from represented positions. An absent child is
+    # unavailable, not a duplicate; sparse proofs cost no full-tree walk.
+    index = targets[0]["offset"]
+    derived = {}
     for leaves in bump["path"]:
         nodes = {}
         for node in leaves:
-            nodes.setdefault(node["offset"], node)  # preserve first-match lookup
-        levels.append(nodes)
-
-    def resolve(height: int, offset: int) -> bytes | None:
-        # None means an explicit duplicate marker, never an absent node.
-        node = levels[height].get(offset)
-        if node is not None:
-            return None if node["flags"] & FLAG_DUPLICATE else node["hash"]
-        if height == 0:
-            raise ValueError(f"missing sibling at level {height}")
-        left = resolve(height - 1, offset * 2)
-        if left is None:
-            raise ValueError("duplicate marker cannot supply a left child")
-        right = resolve(height - 1, offset * 2 + 1)
-        return txm.sha256d(left + (left if right is None else right))
-
-    index = leaf["offset"]
-    working = txid
-    for height in range(len(levels)):
-        sib_off = (index >> height) ^ 1
-        sibling = resolve(height, sib_off)
-        if sibling is None:
-            sibling = working
-        working = txm.sha256d(working + sibling if sib_off & 1 else sibling + working)
-    return working
+            offset = node["offset"]
+            duplicate = node["flags"] & FLAG_DUPLICATE
+            if offset in nodes or (duplicate and not offset % 2):
+                raise ValueError("invalid BUMP node position")
+            nodes[offset] = None if duplicate else node["hash"]
+        for offset, value in derived.items():
+            if offset in nodes and nodes[offset] != value:
+                raise ValueError("inconsistent BUMP intermediate")
+            nodes.setdefault(offset, value)
+        derived = {}
+        for left, value in nodes.items():
+            if left % 2 or left + 1 not in nodes:
+                continue
+            right = nodes[left + 1]
+            derived[left >> 1] = txm.sha256d(value + (value if right is None else right))
+        # The target branch must advance by derivation at every level;
+        # an explicit parent must never bridge a missing membership link.
+        index >>= 1
+        if index not in derived:
+            raise ValueError("missing sibling in target path")
+    return derived[index]
 
 
 # ---------- BRC-62 BEEF (v1) ----------

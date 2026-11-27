@@ -83,18 +83,35 @@ def test_compound_requires_both_children(compound_path, missing):
         spv.bump_root(bump, txid)
 
 
-def test_compound_supplied_intermediate_takes_precedence(compound_path):
+@pytest.mark.parametrize("pruned", [False, True])
+def test_consistent_intermediate(compound_path, pruned):
     bump, expected = compound_path
     leaves = bump["path"][0]
-    pair = spv.txm.sha256d
-    wrong = bytes(32)
-    bump["path"][1].append({"offset": 2, "flags": 0, "hash": wrong})
-    left = pair(pair(leaves[0]["hash"] + leaves[1]["hash"]) +
-                pair(leaves[2]["hash"] + leaves[3]["hash"]))
-    last = pair(leaves[6]["hash"] * 2)
-    actual = spv.bump_root(bump, leaves[0]["hash"][::-1].hex())
-    assert actual == pair(left + pair(wrong + last))
-    assert actual != expected
+    pair = spv.txm.sha256d(leaves[4]["hash"] + leaves[5]["hash"])
+    bump["path"][1].append({"offset": 2, "flags": 0, "hash": pair})
+    if pruned:
+        del leaves[4:6]
+    assert spv.bump_root(bump, leaves[0]["hash"][::-1].hex()) == expected
+
+
+@pytest.mark.parametrize("offset,flag", [(0, 0), (2, 0), (3, 1)])
+def test_reject_inconsistent_intermediate(compound_path, offset, flag):
+    bump, _ = compound_path
+    bump["path"][1].append({"offset": offset, "flags": flag, "hash": None if flag else bytes(32)})
+    with pytest.raises(ValueError):
+        spv.bump_root(bump, bump["path"][0][0]["hash"][::-1].hex())
+
+
+@pytest.mark.parametrize("matches", [0, 2])
+def test_exactly_one_marked_target(compound_path, matches):
+    bump, _ = compound_path
+    leaves = bump["path"][0]
+    if matches == 0:
+        leaves[0]["flags"] = 0
+    else:
+        leaves[6]["hash"] = leaves[0]["hash"]
+    with pytest.raises(ValueError):
+        spv.bump_root(bump, leaves[0]["hash"][::-1].hex())
 
 
 def test_header_pow_real_blocks():

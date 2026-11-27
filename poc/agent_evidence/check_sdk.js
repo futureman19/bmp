@@ -24,7 +24,16 @@ function checkCompound() {
   for (const i of [1, 2]) assert.equal(proof.computeRoot(display(hashes[i])), root);
   assert.throws(() => MerklePath.fromBinary(encode(leaves.slice(0, 3))), /Missing hash/i);
   const wrong = Buffer.concat([Buffer.from([1, 0]), Buffer.alloc(32)]);
-  assert.throws(() => MerklePath.fromBinary(encode(leaves, [wrong])), /Mismatched roots/i);
+  const consistent = Buffer.concat([Buffer.from([1, 0]), pair(hashes[2], hashes[3])]);
+  const samples = { conflict: encode(leaves, [wrong]), consistent: encode(leaves, [consistent]),
+    pruned: encode(leaves.slice(0, 2), [consistent]) };
+  assert.throws(() => MerklePath.fromBinary(Uint8Array.from(samples.conflict)), /Mismatched roots/i);
+  for (const valid of [samples.consistent, samples.pruned]) {
+    assert.equal(MerklePath.fromBinary(Uint8Array.from(valid)).computeRoot(display(hashes[1])), root);
+  }
+  // Optional offline interchange for checking identical BUMP bytes in other readers.
+  return { target: display(hashes[1]), root,
+    samples: Object.fromEntries(Object.entries(samples).map(([k, v]) => [k, v.toString('hex')])) };
 }
 
 function checkCase(f, c) {
@@ -76,4 +85,5 @@ function main() {
   assert.ok(count > 0, 'no CURRENT examples checked');
   console.log(`SDK: compound BUMP and both malformed controls passed; ${count} Atomic BEEF subjects and ${parents} direct parent proofs matched fixture headers. C4 policy not evaluated.`);
 }
+module.exports = { checkCompound };
 if (require.main === module) main();
