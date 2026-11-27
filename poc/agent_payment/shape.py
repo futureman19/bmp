@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-from ecdsa import BadSignatureError, util
+from ecdsa import BadSignatureError, der, util
 from agent.codec import decode
 from agent.links import check_links
 from svcode.crypto import vk_from_hex
@@ -123,11 +123,16 @@ def verify(raw, parents, agreement, *, offer_hash, vout, payment_id=None):
             sig, flag, pub = btc.parse_p2pkh_scriptsig(i['script_sig'])
         except (IndexError, ValueError) as e:
             raise ShapeError('scriptsig') from e
+        need(len(sig) + 1 <= 75 and len(pub) == 33, 'scriptsig')
+        need(i['script_sig'] == btc.push(sig + bytes([flag])) + b'\x21' + pub, 'scriptsig')
         need(flag == 0x41, 'sighash')
         need(pub == a.requester, 'signer')
         try:
+            r, s = util.sigdecode_der(sig, btc.N)
+            need(util.sigencode_der(r, s, btc.N) == sig, 'signature')
+            need(0 < r < btc.N and 0 < s <= btc.N // 2, 'signature')
             vk_from_hex(pub.hex()).verify_digest(sig, digest(t, j, coin), sigdecode=util.sigdecode_der)
-        except BadSignatureError as e:
+        except (BadSignatureError, util.MalformedSignature, der.UnexpectedDER) as e:
             raise ShapeError('signature') from e
     result = f"{t['txid']}.{vout}"
     need(payment_id is None or payment_id == result, 'payment-id')

@@ -2,6 +2,7 @@
 import argparse
 import json
 from pathlib import Path
+from ecdsa import util
 from .shape import C1, FINAL, btc, build, golden_agreement, parse, resolve, serialize, sign, verify
 
 DIR = C1.parent.parent / 'agent_payment'
@@ -67,6 +68,20 @@ def generate():
     t = parse(base)
     t['outputs'][-1] = (599, a.payer)
     bad('signed-other-outputs', 'signature', serialize(t))
+    t = parse(base)
+    for i in t['inputs']:
+        sig, flag, pub = btc.parse_p2pkh_scriptsig(i['script_sig'])
+        r, s = util.sigdecode_der(sig, btc.N)
+        high_s = util.sigencode_der(r, btc.N - s, btc.N)
+        i['script_sig'] = btc.push(high_s + bytes([flag])) + btc.push(pub)
+    bad('high-s', 'signature', serialize(t))
+    t = parse(base)
+    for i in t['inputs']:
+        sig, flag, pub = btc.parse_p2pkh_scriptsig(i['script_sig'])
+        sig_with_flag = sig + bytes([flag])
+        i['script_sig'] = (b'\x4c' + bytes([len(sig_with_flag)]) + sig_with_flag +
+                           b'\x4c\x21' + pub)
+    bad('nonminimal-push', 'scriptsig', serialize(t))
     t = parse(base)
     script = bytearray(t['inputs'][1]['script_sig'])
     script[script[0]] = 0x42

@@ -45,6 +45,18 @@ def test_builder_refuses_invalid_terms(agreement, key, fee, reason):
         build(agreement, parents, ops, fee, key)
 
 
+@pytest.mark.parametrize('name', ['high-s', 'nonminimal-push'])
+def test_malleated_payment_changes_txid_and_is_rejected(name, agreement):
+    source = next(c for c in cases('positive') if c['name'] == 'change')
+    mutated = next(c for c in cases('negative') if c['name'] == name)
+    source_txid = parse(bytes.fromhex(source['raw']))['txid']
+    mutated_txid = parse(bytes.fromhex(mutated['raw']))['txid']
+    assert mutated_txid != source_txid
+    with pytest.raises(ShapeError) as err:
+        check(mutated, agreement)
+    assert str(err.value) == mutated['error']
+
+
 def test_reproducible():
     files = generate()
     assert files == generate()

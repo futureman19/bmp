@@ -20,6 +20,17 @@ function validate(c) {
   return `${tx.id('hex')}.${c.vout}`;
 }
 for (const c of positive) assert.equal(validate(c), c.paymentId);
+const sourceTxid = Transaction.fromHex(positive.find(c => c.name === 'change').raw).id('hex');
 // Same parents and signatures, shape-valid outputs, but a different change amount.
-assert.throws(() => validate(negative.find(c => c.name === 'signed-other-outputs')), /top stack element must be truthy after script evaluation/i);
-console.log(`${positive.length} SDK transaction IDs and all input spends verified; changed outputs rejected`);
+const changedOutputs = negative.find(c => c.name === 'signed-other-outputs');
+assert.notEqual(Transaction.fromHex(changedOutputs.raw).id('hex'), sourceTxid);
+assert.throws(() => validate(changedOutputs), /top stack element must be truthy after script evaluation/i);
+for (const [name, rejection] of [
+  ['high-s', /signature format is invalid/i],
+  ['nonminimal-push', /not minimally-encoded/i],
+]) {
+  const mutated = negative.find(c => c.name === name);
+  assert.notEqual(Transaction.fromHex(mutated.raw).id('hex'), sourceTxid);
+  assert.throws(() => validate(mutated), rejection);
+}
+console.log(`${positive.length} SDK transaction IDs and all input spends verified; changed outputs, high-S and non-minimal pushes rejected`);
