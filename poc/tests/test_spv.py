@@ -53,6 +53,50 @@ def test_bump_parser_structure():
         assert b["block_height"] in (L3["subject_block"]["height"], L3["parent_block"]["height"])
 
 
+@pytest.fixture
+def compound_path():
+    # Seven transactions: the last leaf has an explicit duplicate on its right.
+    hashes = [spv.txm.sha256d(bytes([i])) for i in range(7)]
+    leaves = [{"offset": i, "flags": 2 if i in (0, 6) else 0, "hash": h}
+              for i, h in enumerate(hashes)]
+    leaves.append({"offset": 7, "flags": spv.FLAG_DUPLICATE, "hash": None})
+    layer = hashes + [hashes[-1]]
+    while len(layer) > 1:
+        layer = [spv.txm.sha256d(a + b) for a, b in zip(layer[::2], layer[1::2])]
+    return {"tree_height": 3, "path": [leaves, [], []]}, layer[0]
+
+
+@pytest.mark.parametrize("target", [0, 6])
+def test_compound_root_for_each_target(compound_path, target):
+    bump, expected = compound_path
+    txid = bump["path"][0][target]["hash"][::-1].hex()
+    assert spv.bump_root(bump, txid) == expected
+
+
+@pytest.mark.parametrize("missing", [4, 5, 7])
+def test_compound_requires_both_children(compound_path, missing):
+    bump, _ = compound_path
+    leaves = bump["path"][0]
+    txid = leaves[0]["hash"][::-1].hex()
+    del leaves[missing]
+    with pytest.raises(ValueError, match="missing sibling"):
+        spv.bump_root(bump, txid)
+
+
+def test_compound_supplied_intermediate_takes_precedence(compound_path):
+    bump, expected = compound_path
+    leaves = bump["path"][0]
+    pair = spv.txm.sha256d
+    wrong = bytes(32)
+    bump["path"][1].append({"offset": 2, "flags": 0, "hash": wrong})
+    left = pair(pair(leaves[0]["hash"] + leaves[1]["hash"]) +
+                pair(leaves[2]["hash"] + leaves[3]["hash"]))
+    last = pair(leaves[6]["hash"] * 2)
+    actual = spv.bump_root(bump, leaves[0]["hash"][::-1].hex())
+    assert actual == pair(left + pair(wrong + last))
+    assert actual != expected
+
+
 def test_header_pow_real_blocks():
     for h in HEADERS:
         info = spv.verify_header(h)  # raises on PoW failure

@@ -90,21 +90,34 @@ def bump_root(bump, txid_display_hex: str) -> bytes:
     leaf = next((l for l in level0 if l["hash"] == txid), None)
     if leaf is None:
         raise ValueError("txid not in BUMP level 0")
+    levels = []
+    for leaves in bump["path"]:
+        nodes = {}
+        for node in leaves:
+            nodes.setdefault(node["offset"], node)  # preserve first-match lookup
+        levels.append(nodes)
+
+    def resolve(height: int, offset: int) -> bytes | None:
+        # None means an explicit duplicate marker, never an absent node.
+        node = levels[height].get(offset)
+        if node is not None:
+            return None if node["flags"] & FLAG_DUPLICATE else node["hash"]
+        if height == 0:
+            raise ValueError(f"missing sibling at level {height}")
+        left = resolve(height - 1, offset * 2)
+        if left is None:
+            raise ValueError("duplicate marker cannot supply a left child")
+        right = resolve(height - 1, offset * 2 + 1)
+        return txm.sha256d(left + (left if right is None else right))
+
     index = leaf["offset"]
     working = txid
-    for height, leaves in enumerate(bump["path"]):
+    for height in range(len(levels)):
         sib_off = (index >> height) ^ 1
-        sib = next((l for l in leaves if l["offset"] == sib_off), None)
-        if sib is None:
-            raise ValueError(f"missing sibling at level {height}")
-        if sib["flags"] & FLAG_DUPLICATE:
-            working = txm.sha256d(working + working)
-        elif sib_off & 1:
-            # sibling offset odd ⇒ working node is the LEFT child
-            working = txm.sha256d(working + sib["hash"])
-        else:
-            # sibling offset even ⇒ working node is the RIGHT child
-            working = txm.sha256d(sib["hash"] + working)
+        sibling = resolve(height, sib_off)
+        if sibling is None:
+            sibling = working
+        working = txm.sha256d(working + sibling if sib_off & 1 else sibling + working)
     return working
 
 
